@@ -1,6 +1,8 @@
-# 플러그인 GitHub 자동 동기화 스킬 (plugin-github-sync · v1.0.0)
+# 플러그인 GitHub 자동 동기화 스킬 (plugin-github-sync · v1.0.1)
 
 `binbox-processing` 플러그인의 어떤 파일이든 편집됐을 때 **같은 세션 안에서 GitHub 레포까지 자동 푸시 + 릴리스 태그**까지 완결한다.
+
+**이 스킬은 새 플러그인 프로젝트를 만들 때 레포 구조·marketplace.json 템플릿의 레퍼런스로도 활용된다.**
 
 ---
 
@@ -56,6 +58,90 @@
 
 ---
 
+## 새 플러그인 프로젝트 생성 시 참고 (레퍼런스 템플릿)
+
+다른 프로젝트에서 "이 플러그인 참고해서 만들어"라고 요청하면 아래 템플릿을 사용한다.
+
+### marketplace.json 템플릿 (루트 `.claude-plugin/marketplace.json`)
+
+**⚠️ 이 형식을 정확히 따르지 않으면 Cowork 마켓플레이스 등록이 실패한다.**
+
+```json
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "<레포이름>",
+  "version": "1.0.0",
+  "description": "<플러그인 한 줄 설명>",
+  "owner": {
+    "name": "EitherCompany",
+    "email": "ghgh404@gmail.com",
+    "url": "https://github.com/EitherCompany"
+  },
+  "plugins": [
+    {
+      "name": "<플러그인이름>",
+      "description": "<상세 설명>",
+      "version": "1.0.0",
+      "author": {
+        "name": "이창근 (이더컴퍼니)"
+      },
+      "source": "./<플러그인이름>",
+      "category": "productivity",
+      "keywords": ["keyword1", "keyword2"]
+    }
+  ]
+}
+```
+
+**필수 요소** (하나라도 빠지면 마켓플레이스 등록 실패):
+- `$schema`: `"https://anthropic.com/claude-code/marketplace.schema.json"`
+- `owner`: `name`, `email`, `url` 세 필드 모두
+- `plugins`: 배열 형태, 각 항목에 `name`, `source`, `version` 필수
+- `plugins[].source`: `"./<플러그인폴더명>"` 형태 — 레포 내 플러그인 폴더 경로
+
+### plugin.json 템플릿 (`<플러그인이름>/.claude-plugin/plugin.json`)
+
+```json
+{
+  "name": "<플러그인이름>",
+  "version": "1.0.0",
+  "description": "<상세 설명>",
+  "author": {
+    "name": "이창근 (이더컴퍼니)",
+    "email": "ghgh404@gmail.com"
+  },
+  "homepage": "https://github.com/EitherCompany/<레포이름>",
+  "repository": "https://github.com/EitherCompany/<레포이름>",
+  "license": "MIT",
+  "keywords": ["keyword1", "keyword2"]
+}
+```
+
+### 새 레포 생성 절차
+
+```bash
+# 1. GitHub API로 Private 레포 생성
+curl -sS -X POST \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Accept: application/vnd.github+json" \
+  https://api.github.com/user/repos \
+  -d '{"name":"<레포이름>","private":true,"auto_init":false}'
+
+# 2. 로컬에서 파일 구조 생성 → git init → push
+# 3. Cowork 마켓플레이스 추가 URL (`.git` 없이!):
+#    https://github.com/EitherCompany/<레포이름>
+```
+
+### plugin-github-sync 스킬 복제
+
+새 플러그인에도 자동 동기화 스킬을 넣으려면:
+1. 이 SKILL.md를 복사
+2. "고정 상수" 섹션의 레포명만 변경
+3. Step 4, 7, 8의 URL을 새 레포로 변경
+4. Step 9의 `/plugin update` 명령을 새 플러그인명으로 변경
+
+---
+
 ## 자동 실행 절차 (9단계)
 
 ### Step 1 — PAT 조회 (노션에서)
@@ -80,8 +166,8 @@ token = match.group(0)
 ### Step 3 — 버전 bump (필수)
 
 **두 곳 모두** 같은 버전으로:
-- `.claude-plugin/marketplace.json`
-- `binbox-processing/.claude-plugin/plugin.json`
+- `.claude-plugin/marketplace.json` (루트)
+- `binbox-processing/.claude-plugin/plugin.json` (플러그인 내부)
 
 버전 규칙 (semver):
 - **patch (x.y.N)**: 문구 수정, 버그 픽스, 오타 교정
@@ -161,6 +247,7 @@ rm -rf /tmp/repo-clone  # PAT 잔존 방지
 1. **GitHub 웹 UI 자동화 편집 금지** — `git push` 경로만 허용
 2. **PAT를 플러그인·커밋·로그에 노출 금지** — 노션에서만 조회, 사용 후 bash 변수 폐기
 3. **한 버전 필드만 bump 금지** — `marketplace.json`과 `plugin.json` 둘 다 동기 bump
+4. **marketplace.json에 `plugins` 배열 누락 금지** — 단순 name/version 구조는 마켓플레이스 등록 실패
 
 ---
 
