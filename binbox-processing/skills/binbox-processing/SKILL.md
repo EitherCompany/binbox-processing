@@ -22,7 +22,7 @@
 1. 엑셀 파싱 → shmaOrdNo(쇼핑몰주문번호) + wyblNo(CJ송장번호) 추출
 2. 사방넷 로그인 확인
 3. 주문서수집(자동) 실행 + 3분 대기 (필수!)
-4. 주문서확정관리 → 일괄확정 (품번매핑 포함)
+4. 주문서확정관리 → 일괄확정 (품번매핑 실패 무시, 멈추지 말 것)
 5. 주문서확인처리 → 상태변경(001→002)
 6. ordMapping 구축 → shmaOrdNo ↔ 사방넷 내부 ordNo 매핑
 7. CJ운송장 대량입력 (updateLargeWaybillInput API)
@@ -226,6 +226,8 @@ const loggedIn = app && app.__vue__ && app.__vue__.$store.getters.token;
 
 ## Step 4: 주문서확정관리 (일괄확정)
 
+**빈박스는 송장이 이미 있으므로 품번매핑 실패와 무관하게 확정·송장입력·송신만 되면 된다.**
+
 ```javascript
 window.location.hash = '#/order/order-decide';
 window.__cleanIframe = null;
@@ -233,10 +235,13 @@ window.__cleanIframe = null;
 
 1. 컴포넌트 찾기: `findByFile(app, 'order-decide.vue')`
 2. 검색 실행 (오늘 날짜)
-3. `comp.popItemBatchMapping()` → 일괄품번매핑 팝업
+3. `comp.popItemBatchMapping()` → 일괄품번매핑 시도
+4. **품번매핑 실패 건이 있어도 멈추지 말고** 모달 닫고 바로 일괄주문확정 진행
+5. 일괄주문확정 실행
 
-일부 주문이 품번매핑 실패할 수 있다 (신규 상품 등).
-매핑 실패 건수를 사용자에게 보고하고, 수동 매핑을 요청한다.
+**⚠️ 품번매핑 실패로 멈추지 말 것**: 빈박스 처리의 핵심은 송장입력과 송신이다.
+품번매핑이 안 돼도 주문확정은 진행되며, 이후 송장입력·송신에 영향 없다.
+매핑 실패 건수는 로그에 기록만 하고 사용자에게 보고할 필요 없다.
 
 ---
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "binbox-processing",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "빈박스(체험단) 주문 자동 처리 + GitHub 자동 동기화 플러그인. 사방넷 전체 파이프라인 자동화.",
   "owner": {
     "name": "EitherCompany",
@@ -12,7 +12,7 @@
     {
       "name": "binbox-processing",
       "description": "빈박스(체험단) 주문 자동 처리 플러그인. 체험단 엑셀 파일을 업로드하면 사방넷에서 주문확정 → 확인처리(001→002) → CJ운송장 대량입력 → 쇼핑몰운송장송신 → 크로스체킹까지 전체 파이프라인을 자동 실행. 04-20~04-28 실전 검증 (누적 3,000건+). plugin-github-sync 스킬로 타 PC 자동 동기화.",
-      "version": "1.0.2",
+      "version": "1.0.3",
       "author": {
         "name": "이창근 (이더컴퍼니)"
       },
