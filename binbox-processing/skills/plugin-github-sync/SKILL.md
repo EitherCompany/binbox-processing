@@ -44,7 +44,7 @@
     ├── .claude-plugin/plugin.json            ← version bump 필수
     ├── README.md
     └── skills/
-        ├── binbox-processing/
+        ├── sabangnet-waybill/                ← 스킬 (이전 binbox-processing, v1.2.0에서 rename)
         │   ├── SKILL.md
         │   ├── references/
         │   │   └── sabangnet-api.md
