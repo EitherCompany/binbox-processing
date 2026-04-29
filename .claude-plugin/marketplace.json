@@ -1,8 +1,8 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "binbox-processing",
-  "version": "1.0.3",
-  "description": "빈박스(체험단) 주문 자동 처리 + GitHub 자동 동기화 플러그인. 사방넷 전체 파이프라인 자동화.",
+  "version": "1.1.0",
+  "description": "빈박스(체험단) + 실배송 풀필먼트 송장처리 통합 플러그인. 사방넷 전체 파이프라인 자동화.",
   "owner": {
     "name": "EitherCompany",
     "email": "ghgh404@gmail.com",
@@ -11,8 +11,8 @@
   "plugins": [
     {
       "name": "binbox-processing",
-      "description": "빈박스(체험단) 주문 자동 처리 플러그인. 체험단 엑셀 파일을 업로드하면 사방넷에서 주문확정 → 확인처리(001→002) → CJ운송장 대량입력 → 쇼핑몰운송장송신 → 크로스체킹까지 전체 파이프라인을 자동 실행. 04-20~04-28 실전 검증 (누적 3,000건+). plugin-github-sync 스킬로 타 PC 자동 동기화.",
-      "version": "1.0.3",
+      "description": "체험단 엑셀 또는 발주조회(실배송) 엑셀을 업로드하면 양식을 자동 감지하여 사방넷에서 적절한 파이프라인을 실행. 빈박스(CJ택배) 또는 실배송(롯데택배) 흐름을 자동 분기하고, 주문확정·001→002·송장입력·쇼핑몰송신·크로스체킹까지 완료. 04-29 실배송 132건 추가 검증 완료.",
+      "version": "1.1.0",
       "author": {
         "name": "이창근 (이더컴퍼니)"
       },
@@ -22,6 +22,9 @@
         "binbox",
         "빈박스",
         "체험단",
+        "실배송",
+        "풀필먼트",
+        "발주조회",
         "사방넷",
         "sabangnet",
         "ecommerce",
@@ -29,6 +32,8 @@
         "waybill",
         "coupang",
         "naver",
+        "lotte-courier",
+        "cj-courier",
         "github-sync"
       ]
     }

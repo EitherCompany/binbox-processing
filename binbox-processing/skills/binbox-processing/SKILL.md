@@ -1,13 +1,23 @@
-# 빈박스(체험단) 주문 자동 처리
+---
+name: binbox-processing
+description: 빈박스(체험단) + 실배송 풀필먼트 송장처리 통합 자동화 스킬. 사용자가 엑셀 파일(체험단 또는 발주조회)을 업로드하면, 양식을 자동 감지하여 사방넷(sbadmin03.sabangnet.co.kr)에서 적절한 파이프라인을 실행한다. 체험단 양식이면 빈박스 흐름(주문수집→확정→001→002→CJ송장입력→송신), 발주조회 양식이면 실배송 흐름(ordMapping→001→002→롯데송장입력 덮어쓰기→송신)을 진행하고 크로스체킹까지 완료한다. 반드시 이 스킬을 사용해야 하는 경우는 "빈박스", "체험단", "실배송 송장", "풀필먼트 송장", "송장처리", "운송장 처리", "발주조회 엑셀", "롯데택배 송장", "CJ송장", "송장 등록", "쇼핑몰 송신", "사방넷 송장", "송장 돌려줘" 등 사방넷에서 송장을 등록·송신하는 모든 요청. 사용자가 체험단 엑셀(파일명에 "3pl", "체험단" 포함) 또는 발주조회 엑셀(파일명에 "발주조회" 포함, 암호화)을 업로드하면 이 스킬을 사용할 것.
+---
 
-> **최종 실전 검증**: 2026-04-28 (375건 전체 성공, 누락 0건)
-> **누적 처리**: 04-20~04-28, 8일간 3,000건+ 처리
+# 빈박스(체험단) + 실배송 풀필먼트 송장처리 통합
+
+> **v1.1.0 (2026-04-29)**: 실배송 흐름 통합. 발주조회 양식(롯데택배) 자동 감지 + 처리.
+> **v1.0.3 검증 누적**: 04-20~04-29, 9일간 빈박스 3,000건+ + 실배송 132건 처리 (송신 누락 거의 없음)
 
 ## 개요
 
-체험단 주문(빈박스)은 CJ택배 운송장이 이미 배정된 상태로 들어온다.
-사용자가 체험단 엑셀 파일(개수 가변)을 업로드하면, 사방넷 관리자 사이트에서
-전체 파이프라인을 자동으로 실행하고, 원본 엑셀 대비 크로스체킹 결과를 리포트한다.
+이 스킬은 두 가지 양식을 자동 분기하여 처리한다:
+
+| 시나리오 | 입력 양식 | 택배사 | 사방넷 흐름 |
+|---|---|---|---|
+| **빈박스 (체험단)** | `3pl C/N 체험단_*.xlsx` | CJ택배 (`pcscpCd=003`) | 주문수집 → 확정 → 001→002 → 송장입력 → 송신 |
+| **실배송 (풀필먼트)** | `발주조회_*.xlsx` (암호화) | 롯데(현대)택배 (`pcscpCd=002`) | (수집·확정 스킵) → ordMapping → 001→002 → 송장입력(덮어쓰기) → 송신 |
+
+**자동 분기**: Step 1에서 파일명·헤더 검사로 양식을 결정하고 시나리오를 고정한다.
 
 ## 사용자 정보
 
@@ -15,18 +25,38 @@
 - 서비스코드: 159514
 - svcAcntId: mw159514
 - 쇼핑몰: shop0075(쿠팡), shop0055(스마트스토어)
+- **발주조회 엑셀 비밀번호**: `dlejrhddyd1!` (암호화된 .xlsx 복호화용)
 
-## 전체 처리 흐름
+## 택배사 코드 (사방넷 pcscpCd)
+
+| 코드 | 택배사 |
+|---|---|
+| 001 | 대한통운 |
+| **002** | **롯데(현대)택배** |
+| **003** | **CJ택배** |
+| 008 | (다른 택배사 - 풀필먼트 자동 등록 시 잘못 들어감) |
+
+## 전체 처리 흐름 (자동 분기)
 
 ```
-1. 엑셀 파싱 → shmaOrdNo(쇼핑몰주문번호) + wyblNo(CJ송장번호) 추출
+0. 양식 감지 → SCENARIO = "binbox" | "realship"
+1. 엑셀 파싱 → shmaOrdNo + wyblNo 추출
+   ├ binbox: 14개 체험단 엑셀 (3pl C/N)
+   └ realship: 발주조회 엑셀 (암호 복호화 → 발주조회 시트 파싱)
+
 2. 사방넷 로그인 확인
-3. 주문서수집(자동) 실행 + 3분 대기 (필수!)
-4. 주문서확정관리 → 일괄확정 (품번매핑 실패 무시, 멈추지 말 것)
-5. 주문서확인처리 → 상태변경(001→002)
-6. ordMapping 구축 → shmaOrdNo ↔ 사방넷 내부 ordNo 매핑
-7. CJ운송장 대량입력 (updateLargeWaybillInput API)
-8. 쇼핑몰운송장송신 (검증된 4단계 패턴)
+
+[binbox 시나리오만]
+3. 주문서수집(자동) 실행 + 3분 대기
+4. 주문서확정관리 → 일괄확정 (품번매핑 실패 무시)
+
+[공통]
+5. 주문서확인처리 → 001→002 (binbox: 신규 전체 / realship: 매칭 + 001 상태만)
+6. ordMapping 구축 → shmaOrdNo ↔ 사방넷 내부 ordNo
+7. 운송장 대량입력
+   ├ binbox: pcscpCd=003 (CJ)
+   └ realship: pcscpCd=002 (롯데, 기존 008 위에 덮어쓰기)
+8. 쇼핑몰운송장송신 (4단계 패턴 + 폴링)
 9. 크로스체킹 → 원본 vs 사방넷 처리결과 대조, 누락건 리포트
 ```
 
@@ -34,82 +64,61 @@
 
 ## 절대 금지사항 (실전 사고에서 도출)
 
-이 금지사항은 04-20~04-28 실전에서 실제 사고나 반복 실패를 겪고 도출된 것이다.
-위반 시 수백~수천 건의 주문이 쇼핑몰에 미전송되는 등 심각한 문제가 발생한다.
-
 1. **강제전환 절대 금지**: `updateMallWaybillTransmitForce`, `setForceChange` API 호출 금지.
-   실제 쇼핑몰(쿠팡/네이버)에 전송하지 않고 사방넷 내부 상태만 변경한다.
-   04-20에 이 API를 사용하여 1,198건이 쇼핑몰에 미전송되는 사고가 발생했다.
+   04-20에 이 API로 1,198건이 쇼핑몰에 미전송 사고.
 
 2. **sendWybl() 사용 금지**: `comp.sendWybl()` 메서드는 네트워크 요청을 만들지 않는 no-op이다.
-   04-21에 검증됨. 반드시 아래 Step 8의 mallWaybillTransmitPopup 패턴만 사용한다.
+   반드시 Step 8의 mallWaybillTransmitPopup 패턴만 사용.
 
 3. **setTimeout 금지**: 비동기 대기에 `setTimeout` 사용 금지.
-   setTimeout 콜백 결과를 Claude가 읽으러 가지 않아 멈춤이 발생한다.
    대신 window 변수에 결과 저장 후 즉시 다음 javascript_tool 호출에서 확인.
 
 4. **searchData 사용 금지**: API body에 `searchData`가 아닌 `comp.sbForm`을 deep clone하여 사용.
-   searchData로 API 호출 시 code 10000 에러 발생.
 
-5. **Content-Type 직접 설정 금지 (FormData 전송 시)**: FormData를 보낼 때 Content-Type 헤더를
-   직접 설정하면 boundary가 누락된다. 브라우저가 자동 설정하도록 해야 한다.
+5. **Content-Type 직접 설정 금지 (FormData 전송 시)**: 브라우저가 자동으로 boundary 설정.
 
-6. **부분 처리 금지**: 빈박스를 140건씩 끊어서 처리하지 않는다. 전체 건수가 수집될 때까지
-   기다린 후 한 번에 파이프라인을 돌린다. 부분 처리 시 2번째 바퀴에서 컨텍스트 소진,
-   API 재디버깅으로 매번 3시간+ 소요 패턴 반복. ordMapping 건수도 엑셀 건수와 반드시 일치시킨 후 다음 단계 진행.
+6. **부분 처리 금지**: 전체 건수 수집 후 한 번에 파이프라인 진행. ordMapping 건수도 엑셀 건수와 일치 확인 필수.
+
+7. **realship에서 주문수집(자동)·일괄확정 실행 금지**: 실배송은 사방넷에 이미 주문 존재. 새로 수집하면 기존 데이터 깨짐.
 
 ---
 
 ## 핵심 기술 패턴
 
-### Clean iframe XHR 패턴 (모든 API 호출에 필수)
+### Clean iframe XHR / fetch 패턴
 
-Chrome 확장프로그램(Claude in Chrome 등)이 XMLHttpRequest를 monkey-patch하여
-FormData 전송이 깨지거나 API 응답이 손상된다.
-**모든** 사방넷 API 호출은 반드시 이 패턴을 사용한다:
+Chrome 확장프로그램이 XMLHttpRequest를 monkey-patch하여 FormData 전송이 깨질 수 있다.
+실전에서는 **fetch API**가 더 안정적임이 검증됨 (XHR보다 응답 누락 빈도 낮음).
 
 ```javascript
+// 권장: fetch API (검증됨)
+fetch(url, { method: 'POST', headers: { 'Authorization': token }, body: formData })
+  .then(r => r.json()).then(j => { window.__result = j; });
+// Content-Type 헤더 직접 설정 금지 (FormData일 때 boundary 자동)
+```
+
+XHR이 필요하면 clean iframe 패턴 사용:
+```javascript
 async function getCleanXHR() {
-  if (window.__cleanIframe && window.__cleanIframe.contentWindow) {
-    try {
-      const test = window.__cleanIframe.contentWindow.XMLHttpRequest;
-      if (test) return test;
-    } catch(e) { /* iframe 파괴됨 */ }
-  }
+  if (window.__cleanIframe?.contentWindow?.XMLHttpRequest) return window.__cleanIframe.contentWindow.XMLHttpRequest;
   const iframe = document.createElement('iframe');
-  iframe.style.display = 'none';
-  iframe.src = 'about:blank';
+  iframe.style.display = 'none'; iframe.src = 'about:blank';
   document.body.appendChild(iframe);
-  await new Promise(r => {
-    let c = 0;
-    const poll = () => {
-      c++;
-      if ((iframe.contentWindow && iframe.contentWindow.XMLHttpRequest) || c > 50) r();
-      else requestAnimationFrame(poll);
-    };
-    poll();
-  });
+  await new Promise(r => { let c=0; const poll = () => { c++; if ((iframe.contentWindow?.XMLHttpRequest)||c>50) r(); else requestAnimationFrame(poll); }; poll(); });
   window.__cleanIframe = iframe;
   return iframe.contentWindow.XMLHttpRequest;
 }
 ```
 
-**페이지 이동 시 iframe 초기화 필수**: `window.location.hash`를 변경하면 기존 iframe이
-파괴될 수 있다. 이동 후 반드시 `window.__cleanIframe = null`로 초기화한다.
+페이지 이동 후엔 반드시 `window.__cleanIframe = null`.
 
 ### 인증 토큰
 
 ```javascript
 const token = document.querySelector('#app').__vue__.$store.getters.token;
-window.__token = token;
 ```
 
-**토큰 갱신 패턴 (code 10000 발생 시)**:
-페이지 새로고침 후에도 code 10000이 반복되면, UI의 "검색" 버튼을 클릭한다.
-Vue 프레임워크가 내부적으로 토큰을 갱신하고, 이후 store에서 가져온 토큰이 정상 작동한다.
-1. 해당 페이지의 검색 버튼 find → click
-2. 3초 대기
-3. `app.$store.getters.token` 재취득
+code 10000 발생 시: UI 검색 버튼 클릭 → 3초 대기 → 토큰 재취득.
 
 ### Vue 컴포넌트 탐색
 
@@ -117,284 +126,278 @@ Vue 프레임워크가 내부적으로 토큰을 갱신하고, 이후 store에�
 function findByFile(root, keyword) {
   if (!root) return null;
   const file = root.$options && root.$options.__file;
-  if (file && file === keyword) return root;
-  if (root.$children) {
-    for (const c of root.$children) {
-      const f = findByFile(c, keyword);
-      if (f) return f;
-    }
-  }
+  if (file && file.includes(keyword)) return root;
+  if (root.$children) for (const c of root.$children) { const f = findByFile(c, keyword); if (f) return f; }
   return null;
 }
-const app = document.querySelector('#app').__vue__;
 ```
 
-### 대용량 데이터 브라우저 주입
+### 대용량 데이터 브라우저 주입 (~5KB 초과 시 분할)
 
-javascript_tool로 주입할 수 있는 데이터 크기에는 한계가 있다 (약 5,000자에서 truncation).
-35KB 이상 데이터는 반드시 청크로 분할하여 주입한다:
-
-```
-1단계: bash에서 JSON을 여러 파일로 분할 저장 (/tmp/chunk1.json, /tmp/chunk2.json, ...)
-2단계: 각 파일의 내용을 Read 도구로 읽어 별도의 javascript_tool 호출로 브라우저에 주입
-  - window.__data_chunk1 = {...};
-  - window.__data_chunk2 = {...};
-3단계: 브라우저에서 Object.assign으로 병합
-  - window.__fullData = Object.assign({}, window.__data_chunk1, window.__data_chunk2);
-```
+bash에서 청크 파일 저장 → Read로 읽어 `window.__chunk1 = {...}` 식으로 별도 호출 → 브라우저에서 `Object.assign({}, ...)`로 병합.
 
 ---
 
-## Step 1: 체험단 엑셀 파싱
+## Step 0: 양식 자동 감지
 
-### 엑셀 구조 (두 가지 유형)
+업로드된 파일을 검사하여 시나리오를 결정한다:
 
-**3pl N (네이버 스마트스토어) 체험단:**
-- 파일명 패턴: `3pl N 체험단 {브랜드}_{날짜}-{hash}.xlsx`
-- 주문번호 = 네이버 주문번호 (예: 2026041462326801)
-- 송장 = "CJ대한통운 송장" 컬럼 (예: 6974-9792-0824, 하이픈 포함)
+```python
+import os, glob
+files = sorted(glob.glob('/sessions/.../uploads/*.xlsx'))
+scenario = None
+for f in files:
+    name = os.path.basename(f)
+    if name.startswith('발주조회'):
+        scenario = 'realship'; break
+    if '체험단' in name or name.startswith('3pl'):
+        scenario = 'binbox'; break
+# fallback: 헤더 검사
+if not scenario:
+    import openpyxl
+    wb = openpyxl.load_workbook(files[0])
+    headers = [wb.active.cell(1,i).value for i in range(1, 20)]
+    if '오더코드' in headers and '판매상품명' in headers: scenario = 'realship'
+    elif 'CJ대한통운 송장' in headers: scenario = 'binbox'
+```
 
-**3pl C (쿠팡) 체험단:**
-- 파일명 패턴: `3pl C 체험단 {상품명} {날짜}_{timestamp}-{hash}.xlsx`
-- 주문번호 = 쿠팡 주문번호 (예: 20100184052866)
-- 송장 = "CJ대한통운 송장" 컬럼
+이후 모든 단계는 `scenario` 값에 따라 분기한다.
+
+---
+
+## Step 1A: 빈박스 엑셀 파싱
+
+### 엑셀 구조
+
+**3pl N (네이버 스마트스토어):** 파일명 `3pl N 체험단 {브랜드}_{날짜}-{hash}.xlsx`, 송장 컬럼 "CJ대한통운 송장".
+
+**3pl C (쿠팡):** 파일명 `3pl C 체험단 {상품명} {날짜}_{ts}-{hash}.xlsx`, 송장 컬럼 "CJ대한통운 송장".
 
 ### 파싱 실행
 
 ```bash
 python3 <skill-path>/scripts/parse_excel.py \
   --input-dir <업로드_디렉토리> \
-  --output /tmp/binbox_orders.json
+  --output /tmp/binbox_orders.json \
+  --scenario binbox
 ```
 
-### 파싱 후 wyblMap 생성
+---
 
-파싱 결과에서 shmaOrdNo → wyblNo 매핑 딕셔너리를 추가 생성:
+## Step 1B: 실배송 (발주조회) 엑셀 파싱
 
-```python
-import json
-with open('/tmp/binbox_orders.json') as f:
-    data = json.load(f)
-wybl_map = {o['ordNo']: o['wyblNo'] for o in data['orders'] if o['wyblNo']}
-with open('/tmp/binbox_wyblmap.json', 'w') as f:
-    json.dump(wybl_map, f)
+### 엑셀 구조
+
+- 파일명 패턴: `발주조회_{YYYYMMDDHHMMSS}.xlsx` (CDFV2 암호화됨)
+- 비밀번호: `dlejrhddyd1!`
+- 시트명: "발주조회"
+- 핵심 컬럼:
+  - 컬럼 4: 송장번호 (롯데, 12자리 예: `410672383645`)
+  - 컬럼 5: 회사명 (이더컴퍼니 / 뉴트리정(영양제))
+  - 컬럼 7: 판매상품명
+  - 컬럼 17: **주문번호** (shmaOrdNo, 16자리 스마트스토어 또는 14자리 쿠팡)
+
+### 멀티 행 케이스
+
+한 주문에 여러 옵션·상품이 들어가면 행이 여러 개로 나뉘되 송장은 동일하다.
+unique 주문번호 → 송장번호 매핑이 핵심.
+
+### 누락 발송 케이스 (사방넷에 주문 없음)
+
+배송메시지가 "어제 누락 추가발송", "1세트 추가" 등이고 주소가 비정상(`(어제누락-송장 ...)`)이면
+주문번호가 비어있을 수 있다. 별도 처리(MISS_ 키로 분리) 후 사용자에게 보고만 하고 사방넷 처리는 스킵.
+
+### 파싱 실행
+
+```bash
+python3 <skill-path>/scripts/parse_excel.py \
+  --input-dir <업로드_디렉토리> \
+  --output /tmp/realship_orders.json \
+  --scenario realship \
+  --password 'dlejrhddyd1!'
 ```
 
-이 wyblMap은 이후 모든 단계에서 빈박스 필터링과 운송장 매핑에 사용된다.
+스크립트가 내부적으로 `msoffcrypto-tool`로 복호화 후 파싱.
 
 ---
 
 ## Step 2: 사방넷 로그인 확인
 
-사방넷은 **반드시 `https://www.sabangnet.co.kr/`** 에서 로그인한다.
-`sbadmin03.sabangnet.co.kr`로 직접 접속하면 세션 문제가 발생한다.
+반드시 `https://www.sabangnet.co.kr/`에서 로그인. `sbadmin03.sabangnet.co.kr` 직접 접속 금지(세션 문제).
 
-로그인 확인:
 ```javascript
-const app = document.querySelector('#app');
-const loggedIn = app && app.__vue__ && app.__vue__.$store.getters.token;
+const loggedIn = !!document.querySelector('#app')?.__vue__?.$store?.getters?.token;
 ```
 
 ---
 
-## Step 3: 주문서수집(자동) 실행 (필수!)
+## Step 3: 주문서수집(자동) 실행 [binbox 전용]
 
-**파이프라인 시작 전 반드시 주문서수집을 실행하고 3분 이상 대기해야 한다.**
+> **realship 시나리오에서는 이 단계를 절대 실행하지 않는다.** 풀필먼트 주문은 이미 사방넷에 수집되어 있다.
 
-04-28에 주문수집 미실행으로 16건(375건 중)이 누락된 사고가 발생했다.
-30초~1분 대기는 부족하며, 3분은 기다려야 모든 주문이 안정적으로 수집된다.
+빈박스 처리 시 주문서수집 범위는 "마지막으로 처리한 날의 다음 날 ~ 오늘".
 
-### 주문수집 날짜 범위 규칙
+평일 패턴: 월요일은 금~월(3일치 주말 포함), 화~금은 전날~당일(1일치). 공휴일 끼면 범위 확대.
 
-빈박스 처리 시 주문서수집의 범위는 "마지막으로 처리한 날의 다음 날 ~ 오늘"이다.
-
-**평일 기본 패턴:**
-- 월요일: 금~월 (3일치, 주말 포함)
-- 화~금: 전날~당일 (1일치)
-
-**공휴일/임시공휴일 고려:**
-- 빨간날이 끼어 있으면 그 날도 포함하여 수집 범위를 넓힌다.
-
-### 실행 후 확인
-
-1. 주문서수집(자동) 페이지에서 수집 실행
-2. **3분 이상 대기**
-3. 수집 완료 시점이 당일인지 반드시 확인
-4. 확인 후 주문확정으로 넘어감
+1. 주문서수집(자동) 페이지 → 쇼핑몰 전체선택 → "주문수집(신규+주문확인)" 클릭
+2. **3분 이상 대기** (04-28 사고 사례: 미실행으로 16건 누락)
+3. 수집 완료 시점이 당일인지 확인
 
 ---
 
-## Step 4: 주문서확정관리 (일괄확정)
+## Step 4: 주문서확정관리 (일괄확정) [binbox 전용]
 
-**빈박스는 송장이 이미 있으므로 품번매핑 실패와 무관하게 확정·송장입력·송신만 되면 된다.**
+> **realship 시나리오에서는 이 단계를 스킵한다.**
+
+빈박스는 송장이 이미 있으므로 품번매핑 실패와 무관하게 확정만 되면 된다.
 
 ```javascript
 window.location.hash = '#/order/order-decide';
 window.__cleanIframe = null;
 ```
 
-1. 컴포넌트 찾기: `findByFile(app, 'order-decide.vue')`
-2. 검색 실행 (오늘 날짜)
-3. `comp.popItemBatchMapping()` → 일괄품번매핑 시도
-4. **품번매핑 실패 건이 있어도 멈추지 말고** 모달 닫고 바로 일괄주문확정 진행
-5. 일괄주문확정 실행
-
-**⚠️ 품번매핑 실패로 멈추지 말 것**: 빈박스 처리의 핵심은 송장입력과 송신이다.
-품번매핑이 안 돼도 주문확정은 진행되며, 이후 송장입력·송신에 영향 없다.
-매핑 실패 건수는 로그에 기록만 하고 사용자에게 보고할 필요 없다.
+1. `findByFile(app, 'order-decide.vue')` → 검색
+2. `comp.popOpenOrderDecideBundlePrdCodeMapping()` → 일괄품번매핑 모달 → "일괄품번매핑실행"
+3. **품번매핑 실패가 다수 있어도 멈추지 말 것** (모달 닫고 바로 다음 단계)
+4. `comp.popOpenOrderDecideOrderConfirm()` → 일괄주문확정 모달 → "일괄주문확정" 클릭
 
 ---
 
-## Step 5: 주문서확인처리 (001→002)
-
-### 방법 A: API 직접 호출 (04-22 검증, 329건 성공)
-
-**엔드포인트**: `POST /prod-api/customer/order/OrderConfirm/exeOrderConfirmOrderStatusChange`
-
-```javascript
-const body = {
-  orderStatus: "002",
-  selectData: "1",
-  songClear: "",
-  orderCancelReason: "",
-  claimContent: "",
-  list: found.map(o => ({
-    ordNo: o.ordNo,
-    ordStsCd: "001",
-    ordStsCdList: ["001", "007"],
-    shmaId: o.shmaId || "shop0075",
-    shmaOrdNo: o.shmaOrdNo,
-    ordInputDivCd: o.ordInputDivCd || "01",
-    svcAcntId: "mw159514",
-    ordStsTpDivCd: o.ordStsTpDivCd || "N",
-    songClear: null,
-    claimClear: null,
-    changeClaimContent: null,
-    prdNo: null,
-    skuNo: null
-  })),
-  selectListSize: found.length,
-  searchListSize: found.length,
-  allPartnerId: "mw159514",    // 필수! 없으면 에러
-  svcAcntId: "mw159514",
-  fnlChgUserId: "eithercompany",
-  fnlChgIp4a: "59.7.45.135",
-  fnlChgPrgmNm: "order-confirm-order-status-change-popup",
-  fstRegsUserId: "eithercompany",
-  fstRegsIp4a: "59.7.45.135",
-  fstRegsPrgmNm: "order-confirm-order-status-change-popup"
-};
-```
-
-**핵심 포인트**:
-- `allPartnerId: "mw159514"` — 없으면 "주문서 상태변경 실패" 에러
-- `selectListSize` = list 배열 길이와 동일 — 없으면 "선택된 주문서 개수 비교 시 비정상"
-- `ordStsCdList: ["001", "007"]` — 반드시 배열
-- songClear, claimClear, changeClaimContent, prdNo, skuNo는 반드시 null
-- 한 번에 전체 건수 처리 가능 (329건 한 번에 성공 확인)
-
-### 방법 B: UI 자동화
+## Step 5: 주문서확인처리 (001→002) [공통, 분기 있음]
 
 ```javascript
 window.location.hash = '#/order/order-confirm';
 window.__cleanIframe = null;
+```
 
-const middle = findByFile(app, 'order-confirm-vue-middle.vue');
-middle.sbForm.ordStsCd = '001';
-middle.sbForm.startDate = 'YYYYMMDD';
-middle.sbForm.endDate = 'YYYYMMDD';
+페이지 이동 후 검색:
+```javascript
+const middle = findByFile(app, 'order-confirm-vue-middle');
+middle.sbForm.ordStsCd = '';        // 001/003 모두 보고 클라이언트에서 필터
+middle.sbForm.startDate = '20260427';
+middle.sbForm.endDate = '20260429';
+middle.sbForm.pageSize = 2000;
+middle.sbForm.dateDiv = 'ORD_DT';
 middle.goSearch();
-
-// 다음 호출에서: 전체 선택 → 상태변경 팝업
-// middle.handleSelectionChange(middle.gridData);
-// findByFile(app, 'order-confirm-vue-middle-bottom.vue').popOpenOrderConfirmOrderStatusChange();
 ```
 
-### 방법 C: 사용자 수동 (1~2분)
+**시나리오별 필터 (클라이언트에서):**
 
-A, B 실패 시: "주문서확인처리에서 검색 → 전체 선택 → 주문상태변경 → 주문확인 클릭해주세요"
+```javascript
+const m2 = findByFile(app, 'order-confirm');
+const data = findEl(m2, 'el-table')[0].data;
+const wmapKeys = new Set(Object.keys(window.__wmap));
+const matched = data.filter(r => wmapKeys.has(r.shmaOrdNo));
+
+// binbox: 모두 001 (신규주문)
+// realship: 일부는 001(신규), 일부는 003(이미 풀필먼트가 잘못된 송장으로 등록 시도)
+const found001 = matched.filter(r => r.ordStsCd === '001');
+window.__matched = matched;     // realship: 132건 (003+001 포함)
+window.__found001 = found001;   // 001 상태만 → 002로 변경 대상
+```
+
+### API 직접 호출 (검증된 방법 A)
+
+```javascript
+const found = window.__found001;  // 001 상태인 건만
+const body = {
+  orderStatus: "002",
+  selectData: "1",
+  songClear: "", orderCancelReason: "", claimContent: "",
+  list: found.map(o => ({
+    ordNo: o.ordNo, ordStsCd: "001", ordStsCdList: ["001", "007"],
+    shmaId: o.shmaId, shmaOrdNo: o.shmaOrdNo,
+    ordInputDivCd: o.ordInputDivCd || "01", svcAcntId: "mw159514",
+    ordStsTpDivCd: o.ordStsTpDivCd || "N",
+    songClear: null, claimClear: null, changeClaimContent: null, prdNo: null, skuNo: null
+  })),
+  selectListSize: found.length, searchListSize: found.length,
+  allPartnerId: "mw159514", svcAcntId: "mw159514",
+  fnlChgUserId: "eithercompany", fnlChgIp4a: "59.7.45.135",
+  fnlChgPrgmNm: "order-confirm-order-status-change-popup",
+  fstRegsUserId: "eithercompany", fstRegsIp4a: "59.7.45.135",
+  fstRegsPrgmNm: "order-confirm-order-status-change-popup"
+};
+fetch('https://sbadmin03.sabangnet.co.kr/prod-api/customer/order/OrderConfirm/exeOrderConfirmOrderStatusChange', {
+  method: 'POST',
+  headers: { 'Authorization': token, 'Content-Type': 'application/json;charset=UTF-8' },
+  body: JSON.stringify(body)
+}).then(r => r.json()).then(j => { window.__statusChangeResult = j; });
+```
+
+핵심: `allPartnerId` 필수, `selectListSize === list.length`, `ordStsCdList: ["001", "007"]` 배열, null 필드 보존.
 
 ---
 
-## Step 6: ordMapping 구축 (shmaOrdNo → ordNo)
+## Step 6: ordMapping 구축 [공통]
 
-CJ운송장 API는 **사방넷 내부 ordNo**를 사용한다 (shmaOrdNo 아님!).
+`window.__matched` 가 이미 ordMapping(shmaOrdNo ↔ ordNo)이다. uploadData 생성:
 
 ```javascript
-const middle = findByFile(app, 'order-confirm-vue-middle.vue');
-const sbForm = JSON.parse(JSON.stringify(middle.sbForm));
-sbForm.mode = 'search';
-sbForm.ordStsCd = '002';
-sbForm.searchDateType = 'ORD_DT';
-sbForm.pageSize = 2000;  // 2000건씩 페이지네이션
-
-xhr.open('POST', '.../prod-api/customer/order/OrderConfirm/searchOrders', true);
-// 응답: data.orderList[].ordNo(내부), data.orderList[].shmaOrdNo(쇼핑몰)
+const uploadData = window.__matched.map(o => ({
+  ordNo: String(o.ordNo),
+  shmaOrdNo: o.shmaOrdNo,
+  wyblNo: window.__wmap[o.shmaOrdNo]
+}));
+window.__uploadData = uploadData;
+// 검증
+console.log(uploadData.every(d => d.wyblNo));  // 반드시 true
 ```
 
-빈박스 필터 + uploadData 생성:
-```javascript
-const binboxSet = new Set(Object.keys(wyblMap));
-const uploadData = orderList
-  .filter(o => binboxSet.has(o.shmaOrdNo))
-  .map(o => ({ ordNo: String(o.ordNo), wyblNo: wyblMap[o.shmaOrdNo] }));
-```
-
-**ordMapping 건수 검증**: 반드시 엑셀 원본 건수와 일치시킨 후 다음 단계 진행.
-04-22에 335건 중 330건만 매핑되어 5건이 누락된 적 있음. 날짜 범위를 좁게 잡아 검색 속도 최적화.
+**realship 주의**: 한 shmaOrdNo가 여러 ordNo로 매칭될 수 있다 (멀티 옵션). 모든 ordNo에 동일 송장 매겨야 함.
 
 ---
 
-## Step 7: CJ운송장 대량입력 (04-21 검증 완료)
-
-### SheetJS 로딩
-
-```javascript
-if (!window.XLSX) {
-  const s = document.createElement('script');
-  s.src = 'https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js';
-  document.head.appendChild(s);
-}
-```
-
-### 페이지 이동 + 업로드
+## Step 7: 운송장 대량입력 [pcscpCd 분기]
 
 ```javascript
 window.location.hash = '#/order/waybill-input-large';
 window.__cleanIframe = null;
 ```
 
+SheetJS 로딩:
 ```javascript
-const rows = uploadData.map(d => [String(d.ordNo), String(d.wyblNo), '', '', '003']);
+if (!window.XLSX || !window.XLSX.utils) {
+  delete window.XLSX;
+  const s = document.createElement('script');
+  s.src = 'https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js';
+  s.onload = () => { window.__xlsxLoaded = true; };
+  document.head.appendChild(s);
+}
+```
+
+업로드 (시나리오별 pcscpCd 다름):
+```javascript
+const PCSCP = window.__scenario === 'realship' ? '002' : '003';  // 롯데 vs CJ
+const rows = window.__uploadData.map(d => [String(d.ordNo), String(d.wyblNo), '', '', PCSCP]);
 const ws = XLSX.utils.aoa_to_sheet(rows);
-Object.keys(ws).forEach(key => { if (key[0] !== '!') ws[key].t = 's'; });
+Object.keys(ws).forEach(k => { if (k[0] !== '!') ws[k].t = 's'; });
 const wb = XLSX.utils.book_new();
 XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
 const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
 const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-const file = new File([blob], 'waybill_cj.xlsx', { type: blob.type });
+const file = new File([blob], 'waybill.xlsx', { type: blob.type });
 
-const formData = new FormData();
-formData.append('file', file, 'waybill_cj.xlsx');
-formData.append('pcscpCd', '003');
-formData.append('exclFormSrno', '-99');
-formData.append('exclFormDivCd', '08');
-formData.append('fnlChgUserId', 'eithercompany');
-formData.append('fnlChgIp4a', '59.7.45.135');
-formData.append('fnlChgPrgmNm', 'waybill-input-large');
+const fd = new FormData();
+fd.append('file', file, 'waybill.xlsx');
+fd.append('pcscpCd', PCSCP);
+fd.append('exclFormSrno', '-99');
+fd.append('exclFormDivCd', '08');
+fd.append('fnlChgUserId', 'eithercompany');
+fd.append('fnlChgIp4a', '59.7.45.135');
+fd.append('fnlChgPrgmNm', 'waybill-input-large');
 
-const xhr = new CleanXHR();
-xhr.open('POST', '.../prod-api/customer/order/waybill/updateLargeWaybillInput', true);
-xhr.setRequestHeader('Authorization', token);
-// Content-Type 절대 직접 설정 안 함!
-xhr.send(formData);
+fetch('https://sbadmin03.sabangnet.co.kr/prod-api/customer/order/waybill/updateLargeWaybillInput', {
+  method: 'POST', headers: { 'Authorization': token }, body: fd
+}).then(r => r.text()).then(t => { window.__waybillResult = JSON.parse(t); });
 ```
+
+**realship 주의**: 003 상태 + pcscpCd=008(잘못 등록)인 건들은 새 송장으로 **덮어쓰기**된다.
+04-29 검증: 132건 중 91건이 합포장번호로 잘못 등록되어 있었지만 롯데 송장으로 정상 덮어쓰기됨 (failCount=0).
 
 ---
 
-## Step 8: 쇼핑몰운송장송신 (04-21 검증된 4단계 패턴)
-
-sendWybl()은 no-op이고, 강제전환은 절대 금지. 아래가 유일한 방법이다.
+## Step 8: 쇼핑몰운송장송신 (4단계 패턴) [공통]
 
 ```javascript
 window.location.hash = '#/mall/mall-waybill-transmit';
@@ -403,22 +406,19 @@ window.__cleanIframe = null;
 
 ### 모달 hide 차단 (필수!)
 
-mallWaybillTransmitPopup() 호출 시 모달이 생성 후 즉시 사라진다.
-내부 컴포넌트가 mounted 후 $modal.hide()를 자동 호출하는 것으로 추정.
-반드시 popup 호출 전에 hide를 차단한다:
-
 ```javascript
-const comp = findByFile(app, 'mall-waybill-transmit.vue');
-comp.__origHide = comp.$modal.hide;
-comp.$modal.hide = function() {};  // 빈 함수로 대체
+const comp = findByFile(app, 'mall-waybill-transmit');
+if (!comp.__origHide) comp.__origHide = comp.$modal.hide;
+comp.$modal.hide = function() {};  // 빈 함수
 ```
 
 ### 8-1: getWaybillTransmitInfo
 
 ```javascript
-xhr.open('POST', '.../prod-api/customer/mall/MallWaybillTransmit/getWaybillTransmitInfo', true);
-xhr.send(JSON.stringify({ svcAcntId: 'mw159514', ordNoList: ordNoList.map(Number) }));
-// → window.__sendDatas = response.data.list
+fetch('https://sbadmin03.sabangnet.co.kr/prod-api/customer/mall/MallWaybillTransmit/getWaybillTransmitInfo', {
+  method: 'POST', headers: { 'Authorization': token, 'Content-Type': 'application/json;charset=UTF-8' },
+  body: JSON.stringify({ svcAcntId: 'mw159514', ordNoList: batch.map(Number) })
+}).then(r => r.json()).then(j => { window.__sendDatas = j.data?.list || []; });
 ```
 
 ### 8-2: mallWaybillTransmitPopup
@@ -427,67 +427,86 @@ xhr.send(JSON.stringify({ svcAcntId: 'mw159514', ordNoList: ordNoList.map(Number
 comp.mallWaybillTransmitPopup(window.__sendDatas, 'N');
 ```
 
-### 8-3: iframe name 설정 (다음 javascript_tool 호출에서)
+### 8-3: iframe name + 8-4: form.submit
 
 ```javascript
 for (const f of document.querySelectorAll('iframe')) {
-  if (f.src && f.src.includes('127.0.0.1:8181')) { f.name = 'mallWayBillSong'; break; }
+  if (f.src?.includes('127.0.0.1:8181')) { f.name = 'mallWayBillSong'; break; }
 }
-```
-
-### 8-4: form.submit()
-
-```javascript
 for (const f of document.querySelectorAll('form')) {
   if (f.target === 'mallWayBillSong' && f.action.includes('127.0.0.1')) { f.submit(); break; }
 }
 ```
 
-### 배치 전송 후 폴링 확인 (고정 대기 금지!)
+### 폴링 확인 (3~10초 간격, 최대 60초)
 
-form.submit() 후 고정 sleep 대신 폴링으로 전송완료를 확인한다.
-04-24에 고정 대기 패턴으로 79건 누락 발생.
+`getMallWaybillTransmitLists` (sbForm deep clone) 조회 → `wyblTrnmErrMsg === '전송완료'` 카운트.
+배치 전부 전송완료될 때까지 대기.
 
-```
-for each batch:
-  1. getWaybillTransmitInfo
-  2. $modal.hide 차단 → mallWaybillTransmitPopup → iframe name → form.submit
-  3. 폴링 루프: 3초 간격으로 getMallWaybillTransmitLists 조회
-     → 해당 배치의 ordNo들이 전부 '전송완료'가 될 때까지 대기
-     → 최대 60초 타임아웃
-  4. DOM 정리 (모달/iframe/form 제거)
-  5. 다음 배치
-```
+**검색이 좁게 잡히면**: 주문서확인처리 페이지로 이동해서 거기서 wyblTrnmErrMsg를 직접 확인하는 게 더 정확. (mall-waybill-transmit 페이지의 기본 필터가 송신완료된 건을 감춤)
 
-### 배치 간 DOM 정리 (필수!)
+### 배치 분할
 
-이전 배치의 모달과 iframe을 완전히 제거한 후 다음 배치 시작:
+- 160건 이하: 1배치
+- 160~320: 2배치 (160+나머지)
+- 320 이상: 160건씩 분할
 
+배치 간 DOM 정리 필수:
 ```javascript
 document.querySelectorAll('.vm--overlay, .vm--modal, .vm--container').forEach(el => el.remove());
 document.querySelectorAll('iframe[src*="127.0.0.1"], iframe[name="mallWayBillSong"]').forEach(el => el.remove());
 document.querySelectorAll('form[target="mallWayBillSong"]').forEach(el => el.remove());
 ```
 
-### 배치 분할 기준
+---
 
-- 160건 이하: 1배치
-- 160~320건: 2배치 (160+나머지)
-- 320건 이상: 160건씩 분할
-
-### 결과 확인
+## Step 9: 크로스체킹 + 종합 리포트
 
 ```javascript
-// getMallWaybillTransmitLists (comp.sbForm deep clone 필수!)
-// wyblTrnmErrMsg === '전송완료' 확인
+const excelSet = new Set(Object.keys(window.__wmap));
+const sentSet = new Set();
+matched.filter(r => r.wyblTrnmErrMsg === '전송완료').forEach(r => sentSet.add(r.shmaOrdNo));
+
+// 누락
+const missing = [...excelSet].filter(s => !sentSet.has(s));
+const inSabangNotSent = matched.filter(r => r.wyblTrnmErrMsg !== '전송완료');
 ```
+
+리포트 구성:
+- 시나리오 (binbox / realship)
+- 엑셀 원본 unique 주문번호 / 사방넷 매칭 / 송신완료 / 송신실패 / MISS_(누락 발송)
+- 송신 실패 건의 wyblTrnmErrMsg (예: "스토어팜 취소관리 확인", "합포장번호 유효하지 않음")
+- 사용자 액션 필요 항목
 
 ---
 
-## Step 9: 크로스체킹
+## 알려진 함정 (실전 사고에서 도출)
 
-원본 shmaOrdNo Set vs 전송완료 shmaOrdNo Set 대조.
-누락 건 있으면 파일별 그룹핑 상세 리포트 + 엑셀 생성.
+### 풀필먼트 자동 등록의 합포장번호 문제 (realship)
+
+풀필먼트가 자동으로 사방넷에 송장을 등록하는데, 이때 `pcscpCd=008` (다른 택배사 코드)로 합포장번호(예: 681598395383819)를 입력해버리는 경우가 있다. 이 상태로 송신하면 "등록실패송장번호가 유효하지 않습니다" 에러.
+
+**해결**: 발주조회 엑셀의 새 롯데 송장으로 `pcscpCd=002`로 덮어쓰기. updateLargeWaybillInput API가 덮어쓰기를 지원함 (검증됨).
+
+### realship의 누락 발송 케이스
+
+배송메시지 "어제 누락 추가발송", 주소 `(어제누락-송장 ...)`인 행은 사방넷에 신규 주문이 없다. 주문번호도 보통 비어있다. 파싱 시 `MISS_<원송장>` 키로 분리 → 사용자에게 알림만 하고 처리는 스킵.
+
+### 스토어팜 취소건
+
+송신 결과 `wyblTrnmErrMsg`에 "스토어팜 판매관리 - 취소관리 메뉴에서 취소 주문 건인지 확인" 메시지가 뜨는 경우 → 쇼핑몰 측에서 취소된 주문. 사용자가 직접 확인.
+
+### 모달 즉시 닫힘
+
+`mallWaybillTransmitPopup()` 호출 시 모달이 자동으로 hide되는 현상. 반드시 호출 전에 `comp.$modal.hide = function(){}`로 차단.
+
+### setTimeout 콜백 누락
+
+응답을 setTimeout 안에 저장하면 Claude가 읽으러 오지 않아 멈춘다. 직접 window 변수에 쓰고 다음 javascript_tool 호출에서 즉시 확인.
+
+### XHR vs fetch
+
+XHR이 응답을 누락하는 경우가 있음 (특히 운송장 업로드처럼 무거운 요청). fetch로 전환하면 안정적.
 
 ---
 
@@ -495,19 +514,19 @@ document.querySelectorAll('form[target="mallWayBillSong"]').forEach(el => el.rem
 
 | 증상 | 원인 | 해결 |
 |------|------|------|
-| code 10000 | 토큰 만료 또는 body 형식 | UI 검색 클릭 → 토큰 재취득, comp.sbForm deep clone |
+| code 10000 | 토큰 만료 또는 body 형식 | UI 검색 클릭 → 토큰 재취득 / sbForm deep clone |
 | API 500 | 서버 불안정 | UI 우회 또는 사용자 수동 |
-| 운송장 fail > 0 | 이미 입력 또는 ordNo 불일치 | ordMapping 확인 |
-| 보안프로그램 연결 실패 | 127.0.0.1:8181 미실행 | 사용자에게 실행 요청 |
-| iframe 파괴 | 페이지 이동 | `__cleanIframe = null` 후 재생성 |
-| 데이터 truncation | JS 주입 크기 제한 | 청크 분할 주입 |
+| 운송장 fail > 0 | ordNo 불일치 | ordMapping 검증 |
 | 모달 즉시 닫힘 | $modal.hide 자동 호출 | hide를 빈 함수로 대체 |
-| 배치 간 전송 실패 | 이전 DOM 잔존 | 모달/iframe/form 제거 후 재시도 |
+| 페이지 검색 결과 좁음 (132건 중 12건만) | 페이지 기본 필터 | 주문서확인처리에서 직접 확인 |
+| 등록실패-합포장번호 | pcscpCd=008 잘못 등록 | 새 송장으로 덮어쓰기 (Step 7) |
 
 ---
 
-## 빈박스 vs 실배송 구분 규칙
+## 빈박스 vs 실배송 식별 규칙 (참고)
+
+체험단 엑셀 내부 데이터 기준 (이미 양식이 다르므로 보통은 양식만 봐도 충분):
 
 - **쿠팡 빈박스**: 배송지 주소에 `%` 문자 포함
 - **네이버 빈박스**: 배송메시지에 "문 앞에 놓아주세요!" 포함
-- **최종 확인**: 체험단 엑셀의 주문번호 크로스체킹
+- **실배송**: 위 어느 패턴에도 해당 안 됨 (정상 배송지·메시지)
