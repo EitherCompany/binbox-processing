@@ -5,8 +5,9 @@ description: 빈박스(체험단) + 실배송 풀필먼트 송장처리 통합 �
 
 # 빈박스(체험단) + 실배송 풀필먼트 송장처리 통합
 
+> **v1.3.0 (2026-05-04)**: Step 3·9 강화 — **주문수집 기간 자동 확장 (휴일·연휴 대응)** + **최종 누락건 자동 검출 리포트 + 재수집 안내**.
 > **v1.1.0 (2026-04-29)**: 실배송 흐름 통합. 발주조회 양식(롯데택배) 자동 감지 + 처리.
-> **v1.0.3 검증 누적**: 04-20~04-29, 9일간 빈박스 3,000건+ + 실배송 132건 처리 (송신 누락 거의 없음)
+> **v1.0.3 검증 누적**: 04-20~05-04, 빈박스 8,000건+ + 실배송 600건+ 처리 (재수집 패턴 검증)
 
 ## 개요
 
@@ -235,11 +236,36 @@ const loggedIn = !!document.querySelector('#app')?.__vue__?.$store?.getters?.tok
 
 > **realship 시나리오에서는 이 단계를 절대 실행하지 않는다.** 풀필먼트 주문은 이미 사방넷에 수집되어 있다.
 
-빈박스 처리 시 주문서수집 범위는 "마지막으로 처리한 날의 다음 날 ~ 오늘".
+### 수집 기간 자동 산정 (필수)
 
-평일 패턴: 월요일은 금~월(3일치 주말 포함), 화~금은 전날~당일(1일치). 공휴일 끼면 범위 확대.
+**기본 자동값(전전일~오늘 3일치)을 그대로 쓰지 말 것.** 사방넷의 자동 수집기간은 휴일·연휴를 고려하지 않아 누락이 발생한다.
 
-1. 주문서수집(자동) 페이지 → 쇼핑몰 전체선택 → "주문수집(신규+주문확인)" 클릭
+올바른 방식:
+1. **엑셀 파싱 결과의 가장 이른 "체험단 요청일시"** 추출 (`window.__earliestReqDt`)
+2. 수집기간을 `(가장 이른 요청일시 - 1일) ~ 오늘`로 **수동 설정**
+3. 사방넷 화면 좌측 "수집기간" 입력란을 직접 갱신 (`startDate`, `endDate` 캘린더)
+
+```javascript
+// 엑셀 파싱 결과에서 가장 이른 요청일시 도출
+const minDt = orders.map(o => o.req_dt).filter(Boolean).sort()[0];
+const startDate = new Date(minDt);
+startDate.setDate(startDate.getDate() - 1);  // 1일 buffer
+const startStr = startDate.toISOString().slice(0,10).replace(/-/g, '');
+const endStr = new Date().toISOString().slice(0,10).replace(/-/g, '');
+window.__collectStart = startStr;  // 예: '20260430'
+window.__collectEnd = endStr;       // 예: '20260504'
+```
+
+**왜**: 05-04 사고 사례 — 사방넷 자동값이 5-2~5-4(3일)였는데 휴일(5-1금/5-2토/5-3일) + 4-30 14시 이후 주문이 8건 추가 누락 → 처리 후 재수집 1회 더 필요. 수집기간을 4-30 포함으로 잡으면 첫 회 처리에서 다 잡힘.
+
+**평일/연휴 패턴**:
+- 화~금: 전날~당일 (1일치)
+- 월요일: 금요일~월요일 (4일치, 주말+근로자의날 등 포함)
+- 연휴 직후: 연휴 직전 영업일~당일 (전체 커버)
+
+### 실행
+
+1. 주문서수집(자동) 페이지 → 쇼핑몰 전체선택 → 수집기간 위 산정값으로 입력 → "주문수집(신규+주문확인)" 클릭
 2. **3분 이상 대기** (04-28 사고 사례: 미실행으로 16건 누락)
 3. 수집 완료 시점이 당일인지 확인
 
@@ -460,27 +486,104 @@ document.querySelectorAll('form[target="mallWayBillSong"]').forEach(el => el.rem
 
 ---
 
-## Step 9: 크로스체킹 + 종합 리포트
+## Step 9: 크로스체킹 + 최종 누락건 리포트 (필수)
+
+**처리 종료 직전에 반드시 실행**. 사용자 요청: "마지막에 누락건만 알려주면 된다." 누락 카테고리를 명확히 분리해서 보고할 것.
+
+### 누락 카테고리 4종
+
+| 카테고리 | 정의 | 사용자 액션 |
+|---|---|---|
+| **A. 사방넷 미수집** | 엑셀에 있고 wyblNo도 있는데 사방넷에 ordNo로 등록 자체가 안 됨 | **15분~2시간 후 재수집** 또는 mall 측 push 대기 |
+| **B. 송신 실패** | 사방넷에 매칭되고 송장 입력했지만 wyblTrnmErrMsg에 에러 | wyblTrnmErrMsg 별도 분류 (취소건/합포장번호 등) |
+| **C. MISS_ 누락발송** | 발주조회 엑셀의 "어제 누락 추가발송" 케이스 (사방넷 신규 주문 없음) | 사용자 직접 확인 (주소, 메시지) |
+| **D. 송장번호 누락** | 엑셀 행에 송장번호가 없거나 잘못된 형식 | 엑셀 발급처(풀필먼트) 확인 |
+
+### 카테고리 A 자동 검출 (핵심)
 
 ```javascript
-const excelSet = new Set(Object.keys(window.__wmap));
-const sentSet = new Set();
-matched.filter(r => r.wyblTrnmErrMsg === '전송완료').forEach(r => sentSet.add(r.shmaOrdNo));
+// 사방넷에서 fst_regs_dt 폭넓게 재검색 (최소 7일치)
+const allList = window.__listAll;  // 페이지네이션 누적
+const sabangShmaOrdSet = new Set(allList.map(r => String(r.shmaOrdNo)));
 
-// 누락
-const missing = [...excelSet].filter(s => !sentSet.has(s));
-const inSabangNotSent = matched.filter(r => r.wyblTrnmErrMsg !== '전송완료');
+const excelKeys = Object.keys(window.__wmap);
+const notInSabang = excelKeys.filter(k => !sabangShmaOrdSet.has(k));
+
+// shmaOrdNo 형식별 분류 (16자리=스마트스토어, 13/14자리=쿠팡)
+const byLen = {};
+notInSabang.forEach(k => { const l = k.length; byLen[l] = (byLen[l]||0)+1; });
+
+window.__missingA = notInSabang;
 ```
 
-리포트 구성:
-- 시나리오 (binbox / realship)
-- 엑셀 원본 unique 주문번호 / 사방넷 매칭 / 송신완료 / 송신실패 / MISS_(누락 발송)
-- 송신 실패 건의 wyblTrnmErrMsg (예: "스토어팜 취소관리 확인", "합포장번호 유효하지 않음")
-- 사용자 액션 필요 항목
+**자릿수별 분포가 중요한 시그널** — 모두 한 자릿수에 몰려있으면 mall 별 sync 지연(예: 스마트스토어만 풀필먼트 자동등록 늦음).
+
+### 카테고리 B 분류
+
+```javascript
+const matched = window.__matched;  // 사방넷 매칭된 주문
+const failures = matched.filter(r => r.wyblTrnmErrMsg && !r.wyblTrnmErrMsg.includes('전송완료'));
+
+// 에러 메시지별 그룹
+const byErr = {};
+failures.forEach(r => {
+  const key = r.wyblTrnmErrMsg.slice(0, 40);
+  byErr[key] = (byErr[key]||0)+1;
+});
+```
+
+### 최종 리포트 포맷 (사용자 출력)
+
+```
+# 📦 [시나리오] [날짜] 처리 결과
+
+| 항목 | 건수 |
+|---|---|
+| 엑셀 원본 unique | XXXX |
+| 사방넷 매칭 | XXXX |
+| 송장 입력 성공 | XXXX |
+| **송신 완료** | **XXXX** ✅ |
+
+## 누락건 (사용자 확인 필요)
+
+### A. 사방넷 미수집 (재수집 대기): N건
+- shmaOrdNo 길이 분포: { 13자리: A, 14자리: B, 16자리: C }
+- 사유 추정: {스마트스토어 풀필먼트 sync 지연 / 쿠팡 14시 cutoff 후 휴일 buffer 등}
+- 권장 조치: **15분~2시간 후 동일 스킬 재실행** (수집기간을 가장 이른 요청일시-1일로 설정)
+
+### B. 송신 실패: N건
+- wyblTrnmErrMsg별 분류
+- 주문번호 리스트 (10건만 미리보기)
+
+### C. MISS_ 누락발송: N건
+- 별도 처리 불가, 사용자 직접 확인
+
+### D. 송장번호 누락: N건
+- 엑셀 발급처 확인 필요
+```
+
+### 재처리 안내 (Step 9 종료 시)
+
+A 카테고리가 0이 아니면 사용자에게 명시:
+> "사방넷 미수집 N건 — 풀필먼트/mall에서 사방넷으로 push 지연된 건. 15분~2시간 후 같은 스킬을 한 번 더 실행하면 추가 잡힘. 잊지 말 것."
 
 ---
 
 ## 알려진 함정 (실전 사고에서 도출)
+
+### 휴일 직전 영업일 14시+ 주문 누락 (binbox)
+
+**05-04 사고 검증**: 5-4(월) 처리 시 4-30(목) 14시 이후 주문 89건이 사방넷 1차 cron(11:43)에서 누락됨. 5-1~5-3 휴일이라 사방넷 자동 cron이 주말에 안 도는데, 쿠팡의 14시 daily cutoff 후 주문은 다음 영업일 발송 batch로 분류되어 mall→사방넷 sync가 5-4 15:06 cron까지 지연됨.
+
+- **시그널**: `fstRegsDt` 분포에서 처리 시점(예 11시) 직전까지 잡힌 건 vs 처리 직후(15시) 잡힌 건이 분리됨. 누락된 89건은 모두 4-30 14시 이후 customer 요청.
+- **재발 방지**: Step 9에서 사방넷 미수집(카테고리 A) 자동 검출 → 사용자에게 "1~2시간 후 재실행" 안내. Step 3에서 수집기간 폭 확보로도 일부 완화.
+
+### 스마트스토어 실배송 미수집 (realship)
+
+**05-04 검증**: 발주조회 425건 중 16자리 스마트스토어 주문번호 355건이 모두 사방넷에 미등록. 풀필먼트가 쿠팡 주문은 빠르게 사방넷 자동 등록하지만 스마트스토어는 sync가 늦거나 별도 batch.
+
+- **신호**: 매칭 결과에서 13/14자리(쿠팡)는 정상 매칭되는데 16자리(스마트스토어)만 0건 매칭.
+- **조치**: 카테고리 A 누락으로 보고 + 1~2시간 후 재실행 권장.
 
 ### 풀필먼트 자동 등록의 합포장번호 문제 (realship)
 
