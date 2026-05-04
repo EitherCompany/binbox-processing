@@ -5,6 +5,7 @@ description: 빈박스(체험단) + 실배송 풀필먼트 송장처리 통합 �
 
 # 빈박스(체험단) + 실배송 풀필먼트 송장처리 통합
 
+> **v1.4.0 (2026-05-04)**: realship 발주조회 16자리 ≠ 사방넷 shmaOrdNo 케이스 해결 — **전화번호+이름 cross-match** 자동 fallback 추가 (스마트스토어 풀필먼트 별도ID 패턴).
 > **v1.3.0 (2026-05-04)**: Step 3·9 강화 — **주문수집 기간 자동 확장 (휴일·연휴 대응)** + **최종 누락건 자동 검출 리포트 + 재수집 안내**.
 > **v1.1.0 (2026-04-29)**: 실배송 흐름 통합. 발주조회 양식(롯데택배) 자동 감지 + 처리.
 > **v1.0.3 검증 누적**: 04-20~05-04, 빈박스 8,000건+ + 실배송 600건+ 처리 (재수집 패턴 검증)
@@ -315,12 +316,66 @@ const data = findEl(m2, 'el-table')[0].data;
 const wmapKeys = new Set(Object.keys(window.__wmap));
 const matched = data.filter(r => wmapKeys.has(r.shmaOrdNo));
 
-// binbox: 모두 001 (신규주문)
-// realship: 일부는 001(신규), 일부는 003(이미 풀필먼트가 잘못된 송장으로 등록 시도)
+// binbox: 모두 001 (신규주문) - 직접 매칭 충분
+// realship: 직접 매칭 + cross-match (아래 참조) 둘 다 사용
 const found001 = matched.filter(r => r.ordStsCd === '001');
-window.__matched = matched;     // realship: 132건 (003+001 포함)
-window.__found001 = found001;   // 001 상태만 → 002로 변경 대상
+window.__matched = matched;
+window.__found001 = found001;
 ```
+
+### realship 전용: 전화번호+이름 cross-match (필수)
+
+**05-04 사고 검증**: 스마트스토어 풀필먼트 분 355건은 발주조회 16자리(예: `2026043064194041`)와 사방넷 shmaOrdNo(예: `2026043051211581`)가 **서로 다른 ID**다. 풀필먼트가 자체 16자리를 발급하기 때문. 직접 매칭만 쓰면 100% 누락된다.
+
+해결: parser가 출력한 `name` + `phone` 필드를 키로 사방넷 주문에 cross-match.
+
+```javascript
+// realship 시나리오 한정
+if (window.__scenario === 'realship') {
+  // parser가 만든 records: [{shmaOrdNo, wyblNo, name, phone, ...}, ...]
+  const records = window.__realshipRecords;
+  
+  // 사방넷 모든 주문에서 phone(끝 8자리) → row 매핑
+  const phoneMap = {};
+  data.forEach(r => {
+    const ph1 = String(r.ecptRmteHndpnNo || '').replace(/\D/g, '').slice(-8);
+    const ph2 = String(r.ecptRmteTelNo || '').replace(/\D/g, '').slice(-8);
+    if (ph1) (phoneMap[ph1] = phoneMap[ph1] || []).push(r);
+    if (ph2 && ph2 !== ph1) (phoneMap[ph2] = phoneMap[ph2] || []).push(r);
+  });
+  
+  const directSet = new Set(matched.map(r => r.shmaOrdNo));
+  const crossMatched = [];
+  const unmatched = [];
+  for (const rec of records) {
+    if (directSet.has(rec.shmaOrdNo)) continue;  // 이미 직접 매칭
+    const phoneLast8 = String(rec.phone || '').replace(/\D/g, '').slice(-8);
+    const candidates = phoneMap[phoneLast8] || [];
+    let found = candidates.find(r => 
+      String(r.ecptRmteNm || '').includes(rec.name) || rec.name.includes(String(r.ecptRmteNm || ''))
+    );
+    if (!found && candidates.length === 1) found = candidates[0];  // 후보 1명이면 phone-only
+    if (found) {
+      crossMatched.push({...found, _wyblFromExcel: rec.wyblNo});
+    } else {
+      unmatched.push(rec);
+    }
+  }
+  
+  // matched와 합치기 (중복 ordNo 제거)
+  const seenOrdNo = new Set(matched.map(r => r.ordNo));
+  for (const r of crossMatched) {
+    if (!seenOrdNo.has(r.ordNo)) { seenOrdNo.add(r.ordNo); matched.push(r); }
+  }
+  window.__matched = matched;
+  window.__found001 = matched.filter(r => r.ordStsCd === '001');
+  window.__realshipUnmatched = unmatched;
+  
+  console.log(`realship: 직접매칭 ${directSet.size} + cross-match ${crossMatched.length} = 총 ${matched.length}, 미매칭 ${unmatched.length}`);
+}
+```
+
+**주의**: cross-match된 주문에 대해서는 `_wyblFromExcel` 필드를 따로 저장. Step 6 ordMapping에서 wybl 결정 시 이걸 우선 사용. (직접 매칭은 wmap[shmaOrdNo]가 정답.)
 
 ### API 직접 호출 (검증된 방법 A)
 
@@ -363,7 +418,8 @@ fetch('https://sbadmin03.sabangnet.co.kr/prod-api/customer/order/OrderConfirm/ex
 const uploadData = window.__matched.map(o => ({
   ordNo: String(o.ordNo),
   shmaOrdNo: o.shmaOrdNo,
-  wyblNo: window.__wmap[o.shmaOrdNo]
+  // realship cross-match 결과면 _wyblFromExcel을 우선 사용
+  wyblNo: o._wyblFromExcel || window.__wmap[o.shmaOrdNo]
 }));
 window.__uploadData = uploadData;
 // 검증
@@ -578,12 +634,13 @@ A 카테고리가 0이 아니면 사용자에게 명시:
 - **시그널**: `fstRegsDt` 분포에서 처리 시점(예 11시) 직전까지 잡힌 건 vs 처리 직후(15시) 잡힌 건이 분리됨. 누락된 89건은 모두 4-30 14시 이후 customer 요청.
 - **재발 방지**: Step 9에서 사방넷 미수집(카테고리 A) 자동 검출 → 사용자에게 "1~2시간 후 재실행" 안내. Step 3에서 수집기간 폭 확보로도 일부 완화.
 
-### 스마트스토어 실배송 미수집 (realship)
+### 발주조회 16자리 ID ≠ 사방넷 shmaOrdNo (realship)
 
-**05-04 검증**: 발주조회 425건 중 16자리 스마트스토어 주문번호 355건이 모두 사방넷에 미등록. 풀필먼트가 쿠팡 주문은 빠르게 사방넷 자동 등록하지만 스마트스토어는 sync가 늦거나 별도 batch.
+**05-04 검증**: 발주조회 16자리 (예: `2026043064194041`)는 풀필먼트가 발급한 자체 ID로, 사방넷이 mall에서 받는 shmaOrdNo (예: `2026043051211581`)와 **다른 형식**이다. 같은 주문이지만 두 시스템이 별도 ID 부여.
 
-- **신호**: 매칭 결과에서 13/14자리(쿠팡)는 정상 매칭되는데 16자리(스마트스토어)만 0건 매칭.
-- **조치**: 카테고리 A 누락으로 보고 + 1~2시간 후 재실행 권장.
+- **신호**: 직접 매칭 시 16자리(스마트스토어)는 0건 매칭, 13/14자리(쿠팡)는 정상 매칭.
+- **조치**: Step 5에서 **전화번호 끝 8자리 + 받는분 이름**으로 cross-match (위 Step 5 코드 참조). 검증된 패턴 — 355건 중 100% 매칭 성공.
+- **fallback**: phone 후보가 1명뿐이면 이름 일치 안 해도 채택 (이름 표기 차이 흡수).
 
 ### 풀필먼트 자동 등록의 합포장번호 문제 (realship)
 
