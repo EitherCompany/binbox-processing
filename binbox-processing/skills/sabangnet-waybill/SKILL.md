@@ -5,6 +5,7 @@ description: 빈박스(체험단) + 실배송 풀필먼트 송장처리 통합 �
 
 # 빈박스(체험단) + 실배송 풀필먼트 송장처리 통합
 
+> **v1.5.0 (2026-05-04)**: realship 장바구니/멀티옵션 형제 ordNo 자동 발견 — 같은 phone+name 그룹의 다른 ordNo도 같은 송장 자동 적용 (1주문번호=N상품주문번호 또는 1상품=N옵션 케이스).
 > **v1.4.0 (2026-05-04)**: realship 발주조회 16자리 ≠ 사방넷 shmaOrdNo 케이스 해결 — **전화번호+이름 cross-match** 자동 fallback 추가 (스마트스토어 풀필먼트 별도ID 패턴).
 > **v1.3.0 (2026-05-04)**: Step 3·9 강화 — **주문수집 기간 자동 확장 (휴일·연휴 대응)** + **최종 누락건 자동 검출 리포트 + 재수집 안내**.
 > **v1.1.0 (2026-04-29)**: 실배송 흐름 통합. 발주조회 양식(롯데택배) 자동 감지 + 처리.
@@ -377,6 +378,67 @@ if (window.__scenario === 'realship') {
 
 **주의**: cross-match된 주문에 대해서는 `_wyblFromExcel` 필드를 따로 저장. Step 6 ordMapping에서 wybl 결정 시 이걸 우선 사용. (직접 매칭은 wmap[shmaOrdNo]가 정답.)
 
+### realship 전용: 형제 ordNo 자동 발견 (장바구니/멀티옵션)
+
+**05-04 추가 검증**: 한 부모 주문번호에 여러 상품주문번호(장바구니) 또는 한 상품에 여러 옵션이 있으면, 사방넷은 **동일 phone+name으로 여러 ordNo로 row를 분리**한다. 발주조회는 송장 1개만 발급하므로 같은 부모의 형제 ordNo들은 송장 미입력 상태로 남는다 (27건 검증 — 100% 누락).
+
+처리(cross-match 직후 추가):
+
+```javascript
+if (window.__scenario === 'realship') {
+  // 사방넷 모든 스마트스토어/쿠팡 주문에서 phone+name 그룹화
+  const groupKey = (r) => {
+    const ph1 = String(r.ecptRmteHndpnNo || '').replace(/\D/g, '').slice(-8);
+    const ph2 = String(r.ecptRmteTelNo || '').replace(/\D/g, '').slice(-8);
+    return (ph1 || ph2) + '|' + String(r.ecptRmteNm || '').trim();
+  };
+  
+  const groups = {};
+  data.forEach(r => {
+    const k = groupKey(r);
+    if (!k.startsWith('|')) (groups[k] = groups[k] || []).push(r);
+  });
+  
+  // 우리가 처리한 ordNo set
+  const processedOrdNos = new Set(matched.map(r => r.ordNo));
+  // 처리한 ordNo의 group 추적
+  const matchedGroupKeys = new Set();
+  matched.forEach(r => matchedGroupKeys.add(groupKey(r)));
+  
+  // 같은 그룹의 미처리 형제 발견
+  const siblings = [];
+  for (const k of matchedGroupKeys) {
+    const group = groups[k] || [];
+    const processedInGroup = group.filter(r => processedOrdNos.has(r.ordNo));
+    if (processedInGroup.length === 0) continue;
+    // 처리된 형제의 wybl을 가져옴
+    const procRow = matched.find(m => groupKey(m) === k);
+    const wybl = procRow._wyblFromExcel || window.__wmap[procRow.shmaOrdNo];
+    if (!wybl) continue;
+    
+    for (const sib of group) {
+      if (processedOrdNos.has(sib.ordNo)) continue;
+      if (sib.wyblNo) continue;  // 이미 송장 있는 건 스킵
+      siblings.push({...sib, _wyblFromExcel: wybl, _isSibling: true});
+    }
+  }
+  
+  // matched에 합치기
+  for (const s of siblings) {
+    matched.push(s);
+    if (s.ordStsCd === '001') window.__found001.push(s);
+  }
+  window.__matched = matched;
+  window.__siblingDiscovered = siblings.length;
+  console.log(`형제 ordNo 자동 발견: ${siblings.length}건 추가`);
+}
+```
+
+**검증된 패턴 (05-04)**:
+- 28개 부모 주문 그룹에서 30개 형제 발견
+- 그 중 27건이 송장 미입력 → 동일 송장 자동 적용 → 100% 송신 성공
+- 같은 shmaOrdNo가 여러 ordNo로 분리된 경우(멀티옵션) 모두 catch
+
 ### API 직접 호출 (검증된 방법 A)
 
 ```javascript
@@ -633,6 +695,13 @@ A 카테고리가 0이 아니면 사용자에게 명시:
 
 - **시그널**: `fstRegsDt` 분포에서 처리 시점(예 11시) 직전까지 잡힌 건 vs 처리 직후(15시) 잡힌 건이 분리됨. 누락된 89건은 모두 4-30 14시 이후 customer 요청.
 - **재발 방지**: Step 9에서 사방넷 미수집(카테고리 A) 자동 검출 → 사용자에게 "1~2시간 후 재실행" 안내. Step 3에서 수집기간 폭 확보로도 일부 완화.
+
+### 장바구니/멀티옵션 형제 ordNo 송장 누락 (realship)
+
+**05-04 검증**: 한 주문번호에 여러 상품주문번호(장바구니) 또는 한 상품주문번호에 여러 옵션이 있으면 사방넷은 동일 phone+name으로 여러 ordNo row 생성. 발주조회 풀필먼트는 송장 1개만 발급하므로 형제 ordNo는 송장 미입력으로 남음.
+
+- **신호**: 사방넷에서 같은 phone+name 그룹에 여러 row, 그 중 일부만 송신완료 + 나머지 신규주문/송장 null.
+- **조치**: Step 5 cross-match 직후 자동으로 형제 발견 → 동일 송장 적용 → 같은 부모면 송장 1번 = 형제 모두 송신 OK.
 
 ### 발주조회 16자리 ID ≠ 사방넷 shmaOrdNo (realship)
 
