@@ -5,6 +5,7 @@ description: 빈박스(체험단) + 실배송 풀필먼트 송장처리 통합 �
 
 # 빈박스(체험단) + 실배송 풀필먼트 송장처리 통합
 
+> **v1.6.0 (2026-06-29)**: realship 매칭 안정화 — searchOrders **직접 fetch 금지(401)**, 컴포넌트 `goSearch`+el-table 읽기로 고정. 6000행 cap 시 윈도우 축소/페이지네이션. reload 대비 **localStorage**에 ordNo·ours 저장. 송신은 **전량 한 번에 큐 투입**, stall 시 멈춘 클라이언트 닫고 잔여건만 재투입.
 > **v1.5.0 (2026-05-04)**: realship 장바구니/멀티옵션 형제 ordNo 자동 발견 — 같은 phone+name 그룹의 다른 ordNo도 같은 송장 자동 적용 (1주문번호=N상품주문번호 또는 1상품=N옵션 케이스).
 > **v1.4.0 (2026-05-04)**: realship 발주조회 16자리 ≠ 사방넷 shmaOrdNo 케이스 해결 — **전화번호+이름 cross-match** 자동 fallback 추가 (스마트스토어 풀필먼트 별도ID 패턴).
 > **v1.3.0 (2026-05-04)**: Step 3·9 강화 — **주문수집 기간 자동 확장 (휴일·연휴 대응)** + **최종 누락건 자동 검출 리포트 + 재수집 안내**.
@@ -292,6 +293,15 @@ window.__cleanIframe = null;
 ---
 
 ## Step 5: 주문서확인처리 (001→002) [공통, 분기 있음]
+
+> ⚠️ **검색은 반드시 컴포넌트의 `goSearch`로 — `searchOrders` API를 직접 fetch하지 말 것.**
+> 06-29 검증: searchOrders를 직접 fetch하면 Authorization 헤더가 axios와 다르게 처리되어 **401/99999**로 계속 실패한다(반면 상태변경·송장입력·송신 fetch는 같은 토큰으로 정상). 그러니 **매칭만 goSearch로 화면 검색 후 el-table을 읽고**, 나머지(001→002·송장입력·송신)는 fetch로 처리한다.
+>
+> ⚠️ **sbForm은 날짜·pageSize·currentPage만 최소로 세팅.** `searchKeywordList` 등 다른 필드를 건드리면 **400**이 난다. 안전 세팅: `dateDiv='ORD_DT'; startDate/endDate; pageSize=2000; currentPage=1; searchCondition='cust_nm'; searchKeyword=''`.
+>
+> ⚠️ **el-table은 ~2000행(서버 cap ~6000)에서 잘린다.** 매칭 대상이 안 잡히면 윈도우(날짜)를 좁히거나 `currentPage`를 올려 goSearch를 반복하며 el-table.data를 누적한다. 06-29 실배송 149건은 6/24~6/29 ORD_DT 페이지1(2002행)에서 전건 직접 매칭됨.
+>
+> ⚠️ **페이지 reload/navigate 시 window 변수(`__wmap`,`__ourWybls`,`__matched`) 전부 소실.** 같은 도메인 내 네비게이션은 **localStorage**에 ordNo리스트·ours를 저장하면 살아남는다. navigate 전 `localStorage.setItem(...)`, 후 `JSON.parse(localStorage.getItem(...))`.
 
 ```javascript
 window.location.hash = '#/order/order-confirm';
@@ -589,18 +599,25 @@ for (const f of document.querySelectorAll('form')) {
 
 **검색이 좁게 잡히면**: 주문서확인처리 페이지로 이동해서 거기서 wyblTrnmErrMsg를 직접 확인하는 게 더 정확. (mall-waybill-transmit 페이지의 기본 필터가 송신완료된 건을 감춤)
 
-### 배치 분할
+### 송신은 전량 한 번에 큐 투입 (쪼개지 말 것)
 
-- 160건 이하: 1배치
-- 160~320: 2배치 (160+나머지)
-- 320 이상: 160건씩 분할
+**미송신 ordNo 전체를 한 번의 `getWaybillTransmitInfo`(ordNoList=전체) → `mallWaybillTransmitPopup(sd,'N')` 한 번 → iframe name 지정 → form.submit 한 번**으로 전량을 클라이언트 큐에 통째로 넣고 그대로 둔다. 쪼개서 여러 번 투입하면 매 묶음마다 송신 팝업이 떠 화면이 "새로고침처럼" 깜빡이고(사용자 매우 싫어함), 통과 속도는 쿠팡 throttle이 정하므로 어차피 동일하다. 끝날 때 한 번만 크로스체킹.
 
-배치 간 DOM 정리 필수:
+송신 직전 DOM 정리:
 ```javascript
 document.querySelectorAll('.vm--overlay, .vm--modal, .vm--container').forEach(el => el.remove());
 document.querySelectorAll('iframe[src*="127.0.0.1"], iframe[name="mallWayBillSong"]').forEach(el => el.remove());
 document.querySelectorAll('form[target="mallWayBillSong"]').forEach(el => el.remove());
 ```
+
+### 송신 클라이언트 stall 복구 (06-29 검증)
+
+전량 송신 중 클라이언트(127.0.0.1:8181 탭)가 특정 건(예: "N건중 K번째 송신중")에서 쿠팡 throttle로 **멈추는** 경우가 있다(같은 번호가 1~2분 이상 정지). 이때:
+1. 멈춘 송신 클라이언트 탭(127.0.0.1:8181)을 **닫는다**.
+2. `getMallWaybillTransmitLists`로 우리 송장 중 **`wyblTrnmStsNm`이 성공/완료가 아닌(=송신대기) 잔여 ordNo만** 수집한다.
+3. 그 잔여 ordNo만 다시 `getWaybillTransmitInfo`+`mallWaybillTransmitPopup`으로 **재투입** → 새 클라이언트가 깔끔히 끝낸다.
+
+06-29 실배송 157건: #150에서 stall → 멈춘 탭 닫고 잔여 8건만 재투입 → 8건 전부 성공, 최종 157/157 통신성공 0실패.
 
 ---
 

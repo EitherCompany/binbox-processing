@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "binbox-processing",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "빈박스(체험단) + 실배송 풀필먼트 송장처리 통합 플러그인. 사방넷 전체 파이프라인 자동화.",
   "owner": {
     "name": "EitherCompany",
@@ -12,7 +12,7 @@
     {
       "name": "binbox-processing",
       "description": "체험단 엑셀 또는 발주조회(실배송) 엑셀을 업로드하면 양식을 자동 감지하여 사방넷에서 적절한 파이프라인을 실행. 빈박스(CJ택배) 또는 실배송(롯데택배) 흐름을 자동 분기하고, 주문확정·001→002·송장입력·쇼핑몰송신·크로스체킹까지 완료. 04-29 실배송 132건 추가 검증 완료.",
-      "version": "1.5.0",
+      "version": "1.6.0",
       "author": {
         "name": "이창근 (이더컴퍼니)"
       },
