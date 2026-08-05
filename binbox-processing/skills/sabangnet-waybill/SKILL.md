@@ -5,6 +5,8 @@ description: 빈박스(체험단) + 실배송 풀필먼트 송장처리 통합 �
 
 # 빈박스(체험단) + 실배송 풀필먼트 송장처리 통합
 
+> **v1.9.0 (2026-08-05)**: 7/29~8/4 운영 검증 반영 — ① Step 7 응답은 **`progress` 배열(`success` 플래그)로 파싱** (`data.list` 파싱 시 성공 120건도 total 0으로 오판, 07-30 검증). ② **el-table이 2개** 잡힐 수 있음 → data 많은 테이블 선택. ③ 2000행 cap 밖 옛주문은 **order_id 콤마 다건검색**. ④ 주문번호 없는 재발송(MISS) 건은 **rcv_nm 콤마검색+전화 끝8자리 교차매칭** → 003(출고대기)이면 상태변경 없이 송장 덮어쓰기+송신 (08-03 3건 검증). ⑤ 대량 송신 시 **소수 잔여건이 큐에서 빠지는** 패턴 → 10분+ 대기·사용자 확인 후 잔여만 재투입 (08-03 360건 중 2건). ⑥ 검색 클릭 후 dashboard로 튕기면 localStorage 백업에서 복구.
+> **v1.8.0 (2026-07-23)**: 합배송 형제 ordNo 누락 방지 — 형제 자동 발견을 **realship 전용 → binbox+realship 공통**으로 확대(빈박스 합배송 누락 원인 해결). 07-23 실데이터 진단: 같은 수취인 다건 13그룹 중 12=shmaOrdNo 동일(멀티옵션형), 1=phone+name(장바구니형). `orgnOrdNo`=0·`dupChkTgtOrdNo`=행별 고유라 **묶음 키로 불가** → 1차 shmaOrdNo·2차 phone+name만 사용. 서로 다른 송장 2개↑ 그룹(2박스)은 자동복사 금지+보고. Step 9에 수취인 그룹 스윕 추가.
 > **v1.7.0 (2026-07-03)**: 송신 대기 정책 명문화 — **제출은 단 1회, 클라이언트가 별도 창에서 진행하는 동안 절대 리로드/재투입 금지**. errMsg 빈 값 ≠ stall (완료 시점에만 채워짐). getWaybillTransmitInfo는 송신 전 정보 조회용이라 진행상태 반영 안 됨. 07-03 350건: 4분 무변화를 stall로 오판해 리로드+재투입 → 거의 끝난 송신이 처음부터 다시 돌아 시간 2배 소요 (사용자 강한 불만).
 > **v1.6.0 (2026-06-29)**: realship 매칭 안정화 — searchOrders **직접 fetch 금지(401)**, 컴포넌트 `goSearch`+el-table 읽기로 고정. 6000행 cap 시 윈도우 축소/페이지네이션. reload 대비 **localStorage**에 ordNo·ours 저장. 송신은 **전량 한 번에 큐 투입**, stall 시 멈춘 클라이언트 닫고 잔여건만 재투입.
 > **v1.5.0 (2026-05-04)**: realship 장바구니/멀티옵션 형제 ordNo 자동 발견 — 같은 phone+name 그룹의 다른 ordNo도 같은 송장 자동 적용 (1주문번호=N상품주문번호 또는 1상품=N옵션 케이스).
@@ -327,6 +329,52 @@ middle.sbForm.dateDiv = 'ORD_DT';
 middle.goSearch();
 ```
 
+### el-table 선택 주의 (v1.9.0)
+
+`findEl`/`findAllEl`로 el-table을 찾으면 **인스턴스가 2개** 잡힐 수 있다 (하나는 빈 테이블). 첫 번째만 읽으면 0행으로 오판한다. **data가 가장 많은 테이블**을 선택할 것:
+
+```javascript
+const tables = findAllEl(app, 'el-table', []);
+const tbl = tables.reduce((a, b) => ((b.data?.length||0) > (a.data?.length||0) ? b : a));
+```
+
+또한 **goSearch 프로그래매틱 호출이 0건을 반환하는 경우**가 있다 — sbForm 세팅 후 **화면의 검색 버튼에 dispatchEvent**로 클릭하는 방식이 안정적:
+
+```javascript
+const btn = [...document.querySelectorAll('button')].find(b => b.textContent.trim().includes('검색') && b.offsetParent !== null);
+['mousedown','mouseup','click'].forEach(t => btn.dispatchEvent(new MouseEvent(t, {bubbles:true, cancelable:true, view:window})));
+```
+
+검색 클릭 후 **페이지가 #/dashboard로 튕기는** 경우가 있다(세션 갱신 등). 당황하지 말고 order-confirm으로 재이동 → `localStorage` 백업에서 `__wmap` 복구 → 재검색. (주입 직후 `localStorage.setItem('__claude_wmap_<배치>', ...)` 백업 필수)
+
+### 2000행 cap 밖 옛주문 — order_id 콤마 다건검색 (v1.9.0)
+
+발주조회에 주문일이 오래된 밀린 주문이 섞이면 최근 날짜 창 + 2000행 cap으로 안 잡힌다. 미매칭 shmaOrdNo들을 모아 **한 번에 콤마 검색**:
+
+```javascript
+sf.searchCondition = 'order_id';          // 쇼핑몰주문번호
+sf.searchKeyword = unmatchedKeys.join(','); // 반드시 콤마 구분 (newline은 0건)
+sf.searchKeywordList = unmatchedKeys.slice();
+sf.startDate = '20250101'; sf.endDate = '<오늘>';  // 날짜 아주 넓게 (키워드 필터라 cap 무관)
+// → 검색 버튼 dispatchEvent → el-table에서 추가 매칭분 합침
+```
+
+**07-30 검증**: 224건 중 34건이 옛주문 → 콤마검색으로 전건 매칭. **검색 후 반드시 `searchCondition='cust_nm'; searchKeyword=''; searchKeywordList=[]`로 초기화** — 안 하면 다음 일반 검색이 0건.
+
+### 주문번호 없는 재발송(MISS) — rcv_nm 콤마검색 교차매칭 (v1.9.0)
+
+발주조회에 주문번호가 빈 행(파서가 `MISS_` 분리)이라도 **이름·전화가 있으면 매칭 시도**한다:
+
+```javascript
+sf.searchCondition = 'rcv_nm';
+sf.searchKeyword = names.join(',');   // '백미경,최지혜,우진희'
+sf.searchKeywordList = names.slice();
+sf.startDate = '<약 40일 전>'; sf.ordStsCd = '';   // 상태 무관 전체
+// → 이름 일치 + 전화 끝8자리(ecptRmteTelNo/ecptRmteHndpnNo) 일치로 확정
+```
+
+**08-03 검증 (3건)**: 7/25~26 주문 재발송 건 — 사방넷에는 **003(출고대기) + 기존 송장** 상태로 존재. 이 경우 **상태변경(001→002) 없이** 새 송장으로 덮어쓰기(Step 7)만 하고 송신에 포함하면 정상 전송완료. 크로스체킹 시 이 건들은 등록일이 과거라 **당일 날짜 필터에 안 잡히므로** 날짜 범위를 원주문일까지 넓혀 별도 확인.
+
 **시나리오별 필터 (클라이언트에서):**
 
 ```javascript
@@ -335,7 +383,8 @@ const data = findEl(m2, 'el-table')[0].data;
 const wmapKeys = new Set(Object.keys(window.__wmap));
 const matched = data.filter(r => wmapKeys.has(r.shmaOrdNo));
 
-// binbox: 모두 001 (신규주문) - 직접 매칭 충분
+// binbox: 모두 001 (신규주문). shmaOrdNo filter가 멀티옵션 형제를 이미 포함하나,
+//   장바구니형(phone+name) 형제는 아래 [공통] 형제 발견에서 잡는다.
 // realship: 직접 매칭 + cross-match (아래 참조) 둘 다 사용
 const found001 = matched.filter(r => r.ordStsCd === '001');
 window.__matched = matched;
@@ -396,14 +445,18 @@ if (window.__scenario === 'realship') {
 
 **주의**: cross-match된 주문에 대해서는 `_wyblFromExcel` 필드를 따로 저장. Step 6 ordMapping에서 wybl 결정 시 이걸 우선 사용. (직접 매칭은 wmap[shmaOrdNo]가 정답.)
 
-### realship 전용: 형제 ordNo 자동 발견 (장바구니/멀티옵션)
+### [공통] 형제 ordNo 자동 발견 (binbox+realship · 합배송 누락 방지)
 
-**05-04 추가 검증**: 한 부모 주문번호에 여러 상품주문번호(장바구니) 또는 한 상품에 여러 옵션이 있으면, 사방넷은 **동일 phone+name으로 여러 ordNo로 row를 분리**한다. 발주조회는 송장 1개만 발급하므로 같은 부모의 형제 ordNo들은 송장 미입력 상태로 남는다 (27건 검증 — 100% 누락).
+**05-04 + 07-23 검증**: 한 부모 주문번호에 여러 상품주문번호(장바구니) 또는 한 상품에 여러 옵션이 있으면, 사방넷은 **동일 phone+name으로 여러 ordNo로 row를 분리**한다. 발주조회/체험단은 송장 1개만 발급하므로 같은 부모의 형제 ordNo들은 송장 미입력 상태로 남는다 (realship 27건 + binbox 합배송 검증 — 100% 누락).
 
-처리(cross-match 직후 추가):
+> **07-23 진단 (합배송 키 확정)**: 같은 수취인 다건 13그룹 분석 — 12그룹은 **shmaOrdNo가 동일**(멀티옵션형, Step 5 shmaOrdNo filter가 이미 catch), 1그룹만 shmaOrdNo가 연번으로 다른 **장바구니형**(phone+name으로만 묶임). `orgnOrdNo`는 항상 `0`, `dupChkTgtOrdNo`는 행마다 고유값이라 **묶음 키로 못 씀**. → 신뢰 키는 **1차 shmaOrdNo, 2차 phone+name** 뿐.
+>
+> **binbox도 반드시 실행**: 기존엔 이 블록이 realship 가드에 묶여 빈박스 합배송이 누락됐다 (v1.8.0에서 공통화).
+
+처리(직접/ cross-match 직후 추가 · **binbox+realship 공통 실행**):
 
 ```javascript
-if (window.__scenario === 'realship') {
+{  // [v1.8.0] 시나리오 무관 공통 실행 (합배송 형제 누락 방지)
   // 사방넷 모든 스마트스토어/쿠팡 주문에서 phone+name 그룹화
   const groupKey = (r) => {
     const ph1 = String(r.ecptRmteHndpnNo || '').replace(/\D/g, '').slice(-8);
@@ -433,6 +486,9 @@ if (window.__scenario === 'realship') {
     const procRow = matched.find(m => groupKey(m) === k);
     const wybl = procRow._wyblFromExcel || window.__wmap[procRow.shmaOrdNo];
     if (!wybl) continue;
+    // [v1.8.0] 안전장치: 같은 그룹에 서로 다른 송장 2개↑면(2박스) 자동복사 금지 → 보고만
+    const distinctWybls = new Set(group.filter(r => processedOrdNos.has(r.ordNo)).map(r => r._wyblFromExcel || window.__wmap[r.shmaOrdNo]).filter(Boolean));
+    if (distinctWybls.size > 1) { (window.__multiBoxGroups = window.__multiBoxGroups || []).push(k); continue; }
     
     for (const sib of group) {
       if (processedOrdNos.has(sib.ordNo)) continue;
@@ -448,7 +504,7 @@ if (window.__scenario === 'realship') {
   }
   window.__matched = matched;
   window.__siblingDiscovered = siblings.length;
-  console.log(`형제 ordNo 자동 발견: ${siblings.length}건 추가`);
+  console.log(`형제 ordNo 자동 발견(공통): ${siblings.length}건 추가, 다박스 보류 ${(window.__multiBoxGroups||[]).length}그룹`);
 }
 ```
 
@@ -551,8 +607,17 @@ fd.append('fnlChgPrgmNm', 'waybill-input-large');
 
 fetch('https://sbadmin03.sabangnet.co.kr/prod-api/customer/order/waybill/updateLargeWaybillInput', {
   method: 'POST', headers: { 'Authorization': token }, body: fd
-}).then(r => r.text()).then(t => { window.__waybillResult = JSON.parse(t); });
+}).then(r => r.text()).then(t => {
+  try {
+    const j = JSON.parse(t);
+    const p = j.progress || [];   // ⚠️ 응답은 progress 배열이 정답
+    window.__waybillResult = { total: p.length, ok: p.filter(x => x.success).length,
+                               fails: p.filter(x => !x.success).slice(0, 5) };
+  } catch(e) { window.__waybillResult = { raw: t.slice(0, 200) }; }
+});
 ```
+
+**⚠️ 응답 파싱 주의 (v1.9.0 · 07-30 검증)**: 이 API의 결과는 **`j.progress` 배열**(각 항목 `success` bool)에 담긴다. `j.data.list`로 파싱하면 성공 120건 배치도 `{code:20000, total:0}`으로 보여 실패로 오판하게 된다. `fnlChgPrgmNm: 'waybill-input-large'` 필드도 포함할 것.
 
 **realship 주의**: 003 상태 + pcscpCd=008(잘못 등록)인 건들은 새 송장으로 **덮어쓰기**된다.
 04-29 검증: 132건 중 91건이 합포장번호로 잘못 등록되어 있었지만 롯데 송장으로 정상 덮어쓰기됨 (failCount=0).
@@ -624,6 +689,15 @@ document.querySelectorAll('.vm--overlay, .vm--modal, .vm--container').forEach(el
 document.querySelectorAll('iframe[src*="127.0.0.1"], iframe[name="mallWayBillSong"]').forEach(el => el.remove());
 document.querySelectorAll('form[target="mallWayBillSong"]').forEach(el => el.remove());
 ```
+
+### 대량 송신 시 소수 잔여건 큐 누락 (v1.9.0 · 08-03 검증)
+
+대량(300건+) 송신에서 대부분 전송완료된 뒤 **소수(1~3건)가 errMsg 빈 값으로 남아 진행이 멈추는** 패턴이 있다 — 클라이언트 큐에서 해당 건만 빠진 것. throttle stall(같은 번호에서 정지)과 다르게 클라이언트는 이미 종료된 상태다.
+
+1. **10분+ 인내심 있게 폴링** (진행 중일 수 있음, 폴링은 무해)
+2. 몇 분간 변화 없으면 **사용자에게 클라이언트 창 상태 확인 요청** ("이미 완료였던 것 같다"류 답이면 큐 누락 확정)
+3. DOM 정리 → **잔여건만** `getWaybillTransmitInfo(ordNoList=잔여)` → popup → submit 1회로 재투입
+4. 08-03: 360건 중 358 완료 후 2건 잔여 → 재투입으로 100% 완료. 스마트스토어 소수 건이 빠지는 기존 패턴과 동일 계열.
 
 ### 송신 클라이언트 stall 복구 (06-29 검증)
 
@@ -717,6 +791,25 @@ failures.forEach(r => {
 A 카테고리가 0이 아니면 사용자에게 명시:
 > "사방넷 미수집 N건 — 풀필먼트/mall에서 사방넷으로 push 지연된 건. 15분~2시간 후 같은 스킬을 한 번 더 실행하면 추가 잡힘. 잊지 말 것."
 
+### 합배송 수취인 그룹 스윕 (v1.8.0 · 송신 후 필수)
+
+송신 완료 후, **처리한 수취인(전화 끝8자리+이름) 그룹 중 아직 전송완료 안 된 형제**를 재검출한다. 합배송 누락의 마지막 안전망.
+
+```javascript
+const last8 = s => String(s||'').replace(/\D/g,'').slice(-8);
+const gk = r => (last8(r.ecptRmteHndpnNo)||last8(r.ecptRmteTelNo)) + '|' + String(r.ecptRmteNm||'').trim();
+const processedGroups = new Set(window.__matched.map(gk));
+const leftover = (window.__listAll||window.__data||[]).filter(r =>
+  processedGroups.has(gk(r)) && !gk(r).startsWith('|') &&
+  !(r.wyblTrnmDt || r.wyblTrnmErrMsg === '전송완료')
+);
+window.__haebaeLeftover = leftover;
+// leftover>0 이면: 송장 있으면 재송신, 송장 null이면 형제 발견 재실행(같은 그룹 송장 복사).
+// window.__multiBoxGroups(2박스 보류)도 함께 사용자에게 리포트.
+console.log(`합배송 스윕: 미완료 형제 ${leftover.length}건, 다박스 보류 ${(window.__multiBoxGroups||[]).length}그룹`);
+```
+
+
 ---
 
 ## 알려진 함정 (실전 사고에서 도출)
@@ -728,12 +821,13 @@ A 카테고리가 0이 아니면 사용자에게 명시:
 - **시그널**: `fstRegsDt` 분포에서 처리 시점(예 11시) 직전까지 잡힌 건 vs 처리 직후(15시) 잡힌 건이 분리됨. 누락된 89건은 모두 4-30 14시 이후 customer 요청.
 - **재발 방지**: Step 9에서 사방넷 미수집(카테고리 A) 자동 검출 → 사용자에게 "1~2시간 후 재실행" 안내. Step 3에서 수집기간 폭 확보로도 일부 완화.
 
-### 장바구니/멀티옵션 형제 ordNo 송장 누락 (realship)
+### 장바구니/멀티옵션 형제 ordNo 송장 누락 (binbox+realship · 합배송)
 
-**05-04 검증**: 한 주문번호에 여러 상품주문번호(장바구니) 또는 한 상품주문번호에 여러 옵션이 있으면 사방넷은 동일 phone+name으로 여러 ordNo row 생성. 발주조회 풀필먼트는 송장 1개만 발급하므로 형제 ordNo는 송장 미입력으로 남음.
+**05-04 + 07-23 검증**: 한 주문번호에 여러 상품주문번호(장바구니) 또는 한 상품주문번호에 여러 옵션이 있으면 사방넷은 동일 phone+name으로 여러 ordNo row 생성. 발주조회/체험단은 송장 1개만 발급하므로 형제 ordNo는 송장 미입력으로 남음. **07-23 사고: 이 로직이 realship 전용이라 빈박스 합배송이 누락됨 → v1.8.0에서 공통화.**
 
 - **신호**: 사방넷에서 같은 phone+name 그룹에 여러 row, 그 중 일부만 송신완료 + 나머지 신규주문/송장 null.
-- **조치**: Step 5 cross-match 직후 자동으로 형제 발견 → 동일 송장 적용 → 같은 부모면 송장 1번 = 형제 모두 송신 OK.
+- **묶음 키(확정)**: 1차 shmaOrdNo(멀티옵션형 ~92%), 2차 phone+name(장바구니형). `orgnOrdNo`=0·`dupChkTgtOrdNo`=고유값이라 사용 불가.
+- **조치**: Step 5 매칭 직후 [공통] 형제 발견 실행(binbox 포함) → 동일 송장 적용. 서로 다른 송장 2개↑ 그룹은 자동복사 금지+보고. Step 9 수취인 스윕으로 최종 확인.
 
 ### 발주조회 16자리 ID ≠ 사방넷 shmaOrdNo (realship)
 

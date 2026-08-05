@@ -24,9 +24,10 @@
 
 - **레포**: `EitherCompany/binbox-processing` (Private)
 - **레포 URL**: https://github.com/EitherCompany/binbox-processing
-- **PAT 저장 위치**: 노션 "👮 이창근" 페이지
-  - pageId: `1d8d9e75-0367-80b3-9f32-e82210a58e20`
-  - 본문에 `github_pat_...` 형태로 저장됨
+- **PAT 저장 위치**: 노션 "🏢 회사규정" 페이지 (GITHUB 이더공용)
+  - pageId: `28f176df-2985-4225-ae0d-1c90d94cba27`
+  - 본문 하단에 `github_pat_...` 형태로 저장됨
+  - (구 위치였던 "👮 이창근" 페이지 `1d8d9e75-...`는 404 — 사용 금지)
 - **PAT 범위**: EitherCompany org · repo · Fine-grained
 - **기본 브랜치**: `main`
 
@@ -147,7 +148,7 @@ curl -sS -X POST \
 ### Step 1 — PAT 조회 (노션에서)
 
 ```
-notion-fetch(id: "1d8d9e75-0367-80b3-9f32-e82210a58e20")
+notion-fetch(id: "28f176df-2985-4225-ae0d-1c90d94cba27")
 ```
 
 응답 본문에서 `github_pat_...` 패턴을 정규표현식으로 추출:
